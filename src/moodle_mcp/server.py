@@ -1,16 +1,38 @@
+import logging
 from importlib.metadata import PackageNotFoundError, version
 
 from mcp.server.mcpserver import MCPServer
 
 from . import api
-from .logger import logger
 
 try:
     __version__ = version("moodle-mcp")
 except PackageNotFoundError:
     __version__ = "0.0.0"
 
-mcp = MCPServer("moodle-mcp", version=__version__, dependencies=["glom", "requests"])
+logger = logging.getLogger("moodle-mcp.protocol")
+
+
+async def log_requests(ctx, call_next):
+    """Log every inbound MCP message, so a dropped client session can be traced."""
+    kind = "notification" if ctx.request_id is None else f"request id={ctx.request_id}"
+    logger.info("<- %s (%s)", ctx.method, kind)
+    try:
+        result = await call_next(ctx)
+    except Exception as e:
+        logger.warning("-> %s failed: %s", ctx.method, e)
+        raise
+    if ctx.request_id is not None:
+        logger.info("-> %s ok", ctx.method)
+    return result
+
+
+mcp = MCPServer(
+    "moodle-mcp",
+    version=__version__,
+    dependencies=["glom", "requests"],
+    middleware=[log_requests],
+)
 
 
 @mcp.tool(structured_output=False)
@@ -158,5 +180,6 @@ def create_implementation_plan(assignid: int) -> api.ImplementationPlan:
 
 
 def main():
-    logger.info("Starting moodle-mcp server")
-    mcp.run()
+    from .__main__ import main as cli_main
+
+    return cli_main()

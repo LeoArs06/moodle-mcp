@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
-moodle-mcp = "moodle_mcp.server:main"
+moodle-mcp = "moodle_mcp.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/loyaniu/moodle-mcp"
