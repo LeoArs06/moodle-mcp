@@ -2,6 +2,7 @@ from enum import Enum
 
 import requests
 from glom import delete
+from mcp.server.mcpserver.exceptions import ToolError
 
 from .logger import logger
 from .utils import getenv
@@ -10,8 +11,12 @@ MOODLE_URL = getenv("MOODLE_URL")
 MOODLE_TOKEN = getenv("MOODLE_TOKEN")
 
 
-class MoodleAPIError(Exception):
-    """Raised when the Moodle API returns an error response."""
+class MoodleAPIError(ToolError):
+    """Raised when the Moodle API returns an error response.
+
+    Subclasses ToolError so the message reaches the MCP client instead of a
+    generic "Error executing tool" result.
+    """
 
     def __init__(self, error_code: str, message: str, function: str):
         self.error_code = error_code
@@ -88,9 +93,20 @@ def format_moodle_array_params(key: str, values: list) -> dict:
     return {f"{key}[{i}]": v for i, v in enumerate(values)}
 
 
+def _redact(text: str) -> str:
+    return text.replace(MOODLE_TOKEN, "***") if MOODLE_TOKEN else text
+
+
 def get_moodle_api_data(
     function: APIFunction, params: dict = None, use_original_data=True
 ):
+    if not MOODLE_URL or not MOODLE_TOKEN:
+        raise MoodleAPIError(
+            "config_error",
+            "MOODLE_URL and MOODLE_TOKEN environment variables must be set",
+            function.value,
+        )
+
     request_params = {
         "wstoken": MOODLE_TOKEN,
         "wsfunction": function.value,
@@ -105,10 +121,12 @@ def get_moodle_api_data(
     )
 
     try:
-        rsp = requests.get(MOODLE_URL, params=request_params, timeout=30)
+        # POST keeps the token out of URLs, which end up in logs and error messages.
+        rsp = requests.post(MOODLE_URL, data=request_params, timeout=30)
     except requests.RequestException as e:
-        logger.error(f"Network error calling {function.value}: {e}")
-        raise MoodleAPIError("network_error", str(e), function.value) from e
+        error_msg = _redact(str(e))
+        logger.error(f"Network error calling {function.value}: {error_msg}")
+        raise MoodleAPIError("network_error", error_msg, function.value) from None
 
     if rsp.status_code != 200:
         logger.error(f"Moodle API HTTP error: {rsp.status_code} for {function.value}")
@@ -118,7 +136,16 @@ def get_moodle_api_data(
             function.value,
         )
 
-    data = rsp.json()
+    try:
+        data = rsp.json()
+    except ValueError:
+        logger.error(f"Non-JSON response for {function.value}")
+        raise MoodleAPIError(
+            "invalid_response",
+            "Moodle did not return JSON; check that MOODLE_URL points to"
+            " .../webservice/rest/server.php",
+            function.value,
+        ) from None
 
     # Moodle returns errors as JSON with 'errorcode' and 'message' fields
     if isinstance(data, dict) and "errorcode" in data:
