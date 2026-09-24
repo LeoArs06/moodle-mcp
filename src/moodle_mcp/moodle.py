@@ -94,7 +94,10 @@ def format_moodle_array_params(key: str, values: list) -> dict:
 
 
 def _redact(text: str) -> str:
-    return text.replace(MOODLE_TOKEN, "***") if MOODLE_TOKEN else text
+    # Real tokens are long hex strings; skip trivially short values.
+    if not MOODLE_TOKEN or len(MOODLE_TOKEN) < 8:
+        return text
+    return text.replace(MOODLE_TOKEN, "***")
 
 
 def get_moodle_api_data(
