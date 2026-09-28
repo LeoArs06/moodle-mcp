@@ -1,13 +1,15 @@
 [project]
 name = "moodle-mcp"
-version = "0.4.0"
+version = "0.5.0"
 description = "A Model Context Protocol (MCP) server implementation that provides capabilities to interact with Moodle LMS."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "glom>=24.11.0",
     "mcp>=2,<3",
+    "pillow>=10",
     "pypdf>=5",
+    "pypdfium2>=4",
     "python-dotenv>=1.1.0",
     "requests>=2.32.3",
 ]

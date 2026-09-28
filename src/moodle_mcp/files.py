@@ -17,7 +17,7 @@ from html.parser import HTMLParser
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 import requests
-from mcp_types import BlobResourceContents, EmbeddedResource
+from mcp_types import BlobResourceContents, EmbeddedResource, ImageContent
 from typing_extensions import TypedDict
 
 from .logger import logger
@@ -33,6 +33,9 @@ from .utils import getenv
 
 PLUGINFILE_PATH = "/webservice/pluginfile.php"
 DEFAULT_MAX_CHARS = 40_000
+MAX_RENDER_PAGES = 5
+# Longest side of rendered pages; larger images get downscaled by Claude anyway.
+RENDER_LONG_SIDE = 1568
 MAX_DOWNLOAD_MB = float(getenv("MOODLE_MAX_DOWNLOAD_MB", "10"))
 DOWNLOAD_DIR = getenv("MOODLE_DOWNLOAD_DIR")
 
@@ -393,6 +396,57 @@ def read_course_file(
         " to get the raw file.",
         "read_course_file",
     )
+
+
+def view_course_file_pages(fileurl: str, pages: str = "1-3") -> list:
+    """Render PDF pages as JPEG images, for scanned or handwritten documents."""
+    import pypdfium2 as pdfium
+
+    content, mimetype, filename = fetch_file(fileurl)
+    if not (mimetype == "application/pdf" or content[:5] == b"%PDF-"):
+        raise MoodleAPIError(
+            "unsupported_type",
+            f"{filename} is not a PDF ({mimetype or 'unknown type'})",
+            "view_course_file_pages",
+        )
+
+    try:
+        pdf = pdfium.PdfDocument(content)
+    except pdfium.PdfiumError as e:
+        raise MoodleAPIError("invalid_pdf", f"Cannot read PDF: {e}", "view_course_file_pages") from None
+
+    try:
+        total = len(pdf)
+        wanted = _parse_pages(pages, total)
+        shown, rest = wanted[:MAX_RENDER_PAGES], wanted[MAX_RENDER_PAGES:]
+        if not shown:
+            raise MoodleAPIError(
+                "invalid_pages", f"No pages in range '{pages}' ({total} pages)", "view_course_file_pages"
+            )
+
+        summary = f"{filename}: pages {_format_ranges(shown)} of {total}"
+        if rest:
+            summary += f". At most {MAX_RENDER_PAGES} pages per call; continue with pages='{_format_ranges(rest)}'"
+        result: list = [summary]
+
+        for idx in shown:
+            page = pdf[idx]
+            width, height = page.get_size()
+            scale = RENDER_LONG_SIDE / max(width, height, 1)
+            image = page.render(scale=scale).to_pil().convert("RGB")
+            buf = io.BytesIO()
+            image.save(buf, format="JPEG", quality=80, optimize=True)
+            result.append(f"--- page {idx + 1} ---")
+            result.append(
+                ImageContent(
+                    type="image",
+                    data=base64.b64encode(buf.getvalue()).decode("ascii"),
+                    mime_type="image/jpeg",
+                )
+            )
+        return result
+    finally:
+        pdf.close()
 
 
 def _safe_filename(name: str) -> str:

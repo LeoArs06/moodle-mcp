@@ -3,7 +3,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 from mcp.server.mcpserver import MCPServer
 
-from mcp_types import EmbeddedResource
+from mcp_types import EmbeddedResource, ImageContent
 
 from . import api, files
 
@@ -69,6 +69,12 @@ def read_course_file(
 ) -> files.FileText:
     """Download a course file and return its text (PDF, HTML pages, plain text). Use the fileurl from list_course_files or get_course_content. For long PDFs pass pages like '1-10' and continue with next_pages from the result"""
     return files.read_course_file(fileurl, pages, max_chars)
+
+
+@mcp.tool(structured_output=False)
+def view_course_file_pages(fileurl: str, pages: str = "1-3") -> list[str | ImageContent]:
+    """Render PDF pages as images (max 5 per call). Use this when read_course_file reports '[no text layer]' (scanned or handwritten notes) or when the layout, formulas or diagrams matter"""
+    return files.view_course_file_pages(fileurl, pages)
 
 
 @mcp.tool(structured_output=False)

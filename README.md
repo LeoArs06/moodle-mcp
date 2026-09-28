@@ -24,9 +24,10 @@ The server exposes the following tools.
 | --- | --- |
 | `list_course_files` | List files in a course (resources, folders, pages) with `fileurl`, size and type, optionally filtered by `query` or `mimetype`; external links are flagged |
 | `read_course_file` | Download a file and return its text: PDF (page by page, with ranges like `1-10`), HTML pages, plain text |
+| `view_course_file_pages` | Render PDF pages as images (up to 5 per call), for scanned or handwritten notes, formulas and diagrams |
 | `download_course_file` | Return the raw file as an embedded binary resource, and save it to `MOODLE_DOWNLOAD_DIR` when set |
 
-`read_course_file` is the one to use from remote clients (claude.ai, Cowork, MetaMCP): the text goes straight into the conversation. Scanned PDFs have no text layer; those pages come back as `[no text layer: ...]`.
+`read_course_file` is the one to use from remote clients (claude.ai, Cowork, MetaMCP): the text goes straight into the conversation. Scanned or handwritten PDFs have no text layer: those pages come back as `[no text layer: ...]`, and `view_course_file_pages` shows them as images instead.
 
 Files are only fetched from the Moodle host in `MOODLE_URL`, with the token sent in the POST body, so links to other sites never receive it.
 
