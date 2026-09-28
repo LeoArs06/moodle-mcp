@@ -18,6 +18,18 @@ The server exposes the following tools.
 | `get_course_announcements` | Get announcements from course news forums, optionally filtered by course ID |
 | `get_recent_activity` | Get recent activity and updates across courses since a given time |
 
+### Files
+
+| Tool | Description |
+| --- | --- |
+| `list_course_files` | List every file in a course (resources, folders, pages) with `fileurl`, size and type; external links are flagged |
+| `read_course_file` | Download a file and return its text: PDF (page by page, with ranges like `1-10`), HTML pages, plain text |
+| `download_course_file` | Return the raw file as an embedded binary resource, and save it to `MOODLE_DOWNLOAD_DIR` when set |
+
+`read_course_file` is the one to use from remote clients (claude.ai, Cowork, MetaMCP): the text goes straight into the conversation. Scanned PDFs have no text layer; those pages come back as `[no text layer: ...]`.
+
+Files are only fetched from the Moodle host in `MOODLE_URL`, with the token sent in the POST body, so links to other sites never receive it.
+
 ### Assignments & deadlines
 
 | Tool | Description |
@@ -82,6 +94,45 @@ Go to Claude > Settings > Developer > Edit Config > claude_desktop_config.json t
   }
 }
 ```
+
+### Method 3: MetaMCP (remote clients over SSE / streamable HTTP)
+
+[MetaMCP](https://github.com/metatool-ai/metamcp) runs the server over stdio and exposes it to remote clients such as claude.ai, Cowork or the Claude mobile app. Add a **STDIO** server with:
+
+- **Command:** `uvx`
+- **Arguments:** `--from https://github.com/<owner>/moodle-mcp/archive/<commit-or-branch>.zip moodle-mcp`
+- **Environment variables:**
+
+  ```
+  MOODLE_URL=https://{your-moodle-url}/webservice/rest/server.php
+  MOODLE_TOKEN={your-moodle-token}
+  ```
+
+Pin a commit hash rather than a branch name so every restart runs the same code, and update the hash to upgrade.
+
+The server writes nothing to the working directory, so it runs from read-only containers. Files returned by `download_course_file` are saved on the MetaMCP host, not on your computer, so remote clients should use `read_course_file` instead.
+
+To check the setup from the MetaMCP host:
+
+```bash
+MOODLE_URL=... MOODLE_TOKEN=... uvx --from <zip-url> moodle-mcp --health
+```
+
+### Environment variables
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `MOODLE_URL` | (required) | `https://{your-moodle-url}/webservice/rest/server.php` |
+| `MOODLE_TOKEN` | (required) | Web service token, see [Authentication](#authentication) |
+| `MOODLE_MAX_DOWNLOAD_MB` | `10` | Largest file `read_course_file` / `download_course_file` will fetch |
+| `MOODLE_DOWNLOAD_DIR` | unset | If set, `download_course_file` also saves files here |
+| `MCP_TRANSPORT` | `stdio` | `stdio` or `streamable-http` |
+| `MCP_HTTP_HOST` / `MCP_HTTP_PORT` | `127.0.0.1` / `8000` | Bind address for `streamable-http` |
+| `MOODLE_MCP_LOG_LEVEL` | `INFO` | Log level (logs go to stderr) |
+| `MOODLE_MCP_LOG_FILE` | unset | Also append logs to this file |
+| `MOODLE_MCP_DUMP_DIR` | unset | Dump raw Moodle responses here for debugging (contains personal data) |
+
+`streamable-http` has no authentication of its own. Keep it on localhost or put it behind a proxy that checks credentials.
 
 ## Authentication
 

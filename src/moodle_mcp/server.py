@@ -3,7 +3,9 @@ from importlib.metadata import PackageNotFoundError, version
 
 from mcp.server.mcpserver import MCPServer
 
-from . import api
+from mcp_types import EmbeddedResource
+
+from . import api, files
 
 try:
     __version__ = version("moodle-mcp")
@@ -51,6 +53,26 @@ def get_my_courses() -> list[api.Course]:
 def get_course_content(courseid: int) -> list[api.CourseSection]:
     """Get sections and modules for a specific course by its ID"""
     return api.get_course_content(courseid)
+
+
+@mcp.tool(structured_output=False)
+def list_course_files(courseid: int) -> list[files.CourseFile]:
+    """List all files attached to a course (resources, folders, pages) with their fileurl, size and type. Entries with external=true are links to other sites and cannot be downloaded"""
+    return files.list_course_files(courseid)
+
+
+@mcp.tool(structured_output=False)
+def read_course_file(
+    fileurl: str, pages: str | None = None, max_chars: int = files.DEFAULT_MAX_CHARS
+) -> files.FileText:
+    """Download a course file and return its text (PDF, HTML pages, plain text). Use the fileurl from list_course_files or get_course_content. For long PDFs pass pages like '1-10' and continue with next_pages from the result"""
+    return files.read_course_file(fileurl, pages, max_chars)
+
+
+@mcp.tool(structured_output=False)
+def download_course_file(fileurl: str) -> list[str | EmbeddedResource]:
+    """Download a course file as-is and return it as an embedded binary resource (also saved to MOODLE_DOWNLOAD_DIR on the server when configured). Prefer read_course_file to read the content"""
+    return files.download_course_file(fileurl)
 
 
 @mcp.tool(structured_output=False)
