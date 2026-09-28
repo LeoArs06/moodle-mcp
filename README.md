@@ -23,9 +23,10 @@ The server exposes the following tools.
 | Tool | Description |
 | --- | --- |
 | `list_course_files` | List files in a course (resources, folders, pages) with `fileurl`, size and type, optionally filtered by `query` or `mimetype`; external links are flagged |
-| `read_course_file` | Download a file and return its text: PDF (page by page, with ranges like `1-10`), HTML pages, plain text |
-| `view_course_file_pages` | Render PDF pages as images (up to 5 per call), for scanned or handwritten notes, formulas and diagrams |
-| `download_course_file` | Return the raw file as an embedded binary resource, and save it to `MOODLE_DOWNLOAD_DIR` when set |
+| `read_course_file` | Download a file and return its text: PDF (page by page, with ranges like `1-10`), HTML pages, plain text; `inner_path` reads one file inside a zip |
+| `list_zip_contents` | List the files inside a zip archive without extracting it |
+| `view_course_file_pages` | Render PDF pages as images (up to 5 per call), for scanned or handwritten notes, formulas and diagrams; also takes `inner_path` |
+| `download_course_file` | Return the raw file (up to 10 MB) as an embedded binary resource, and save it to `MOODLE_DOWNLOAD_DIR` when set |
 
 `read_course_file` is the one to use from remote clients (claude.ai, Cowork, MetaMCP): the text goes straight into the conversation. Scanned or handwritten PDFs have no text layer: those pages come back as `[no text layer: ...]`, and `view_course_file_pages` shows them as images instead.
 
@@ -125,7 +126,7 @@ MOODLE_URL=... MOODLE_TOKEN=... uvx --from <zip-url> moodle-mcp --health
 | --- | --- | --- |
 | `MOODLE_URL` | (required) | `https://{your-moodle-url}/webservice/rest/server.php` |
 | `MOODLE_TOKEN` | (required) | Web service token, see [Authentication](#authentication) |
-| `MOODLE_MAX_DOWNLOAD_MB` | `10` | Largest file `read_course_file` / `download_course_file` will fetch |
+| `MOODLE_MAX_DOWNLOAD_MB` | `20` | Largest file (or unpacked zip member) the file tools will fetch |
 | `MOODLE_DOWNLOAD_DIR` | unset | If set, `download_course_file` also saves files here |
 | `MCP_TRANSPORT` | `stdio` | `stdio` or `streamable-http` |
 | `MCP_HTTP_HOST` / `MCP_HTTP_PORT` | `127.0.0.1` / `8000` | Bind address for `streamable-http` |

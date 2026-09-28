@@ -65,16 +65,27 @@ def list_course_files(
 
 @mcp.tool(structured_output=False)
 def read_course_file(
-    fileurl: str, pages: str | None = None, max_chars: int = files.DEFAULT_MAX_CHARS
+    fileurl: str,
+    pages: str | None = None,
+    max_chars: int = files.DEFAULT_MAX_CHARS,
+    inner_path: str | None = None,
 ) -> files.FileText:
-    """Download a course file and return its text (PDF, HTML pages, plain text). Use the fileurl from list_course_files or get_course_content. For long PDFs pass pages like '1-10' and continue with next_pages from the result"""
-    return files.read_course_file(fileurl, pages, max_chars)
+    """Download a course file and return its text (PDF, HTML pages, plain text). Use the fileurl from list_course_files or get_course_content. For long PDFs pass pages like '1-10' and continue with next_pages from the result. For a file inside a zip archive, pass the zip's fileurl and inner_path from list_zip_contents"""
+    return files.read_course_file(fileurl, pages, max_chars, inner_path)
 
 
 @mcp.tool(structured_output=False)
-def view_course_file_pages(fileurl: str, pages: str = "1-3") -> list[str | ImageContent]:
-    """Render PDF pages as images (max 5 per call). Use this when read_course_file reports '[no text layer]' (scanned or handwritten notes) or when the layout, formulas or diagrams matter"""
-    return files.view_course_file_pages(fileurl, pages)
+def list_zip_contents(fileurl: str) -> list[files.ZipEntry]:
+    """List the files inside a zip archive from a course, without extracting them. Read one with read_course_file or view_course_file_pages by passing its path as inner_path"""
+    return files.list_zip_contents(fileurl)
+
+
+@mcp.tool(structured_output=False)
+def view_course_file_pages(
+    fileurl: str, pages: str = "1-3", inner_path: str | None = None
+) -> list[str | ImageContent]:
+    """Render PDF pages as images (max 5 per call). Use this when read_course_file reports '[no text layer]' (scanned or handwritten notes) or when the layout, formulas or diagrams matter. For a PDF inside a zip archive, pass inner_path from list_zip_contents"""
+    return files.view_course_file_pages(fileurl, pages, inner_path)
 
 
 @mcp.tool(structured_output=False)

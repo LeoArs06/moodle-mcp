@@ -13,6 +13,7 @@ import logging
 import mimetypes
 import os
 import re
+import zipfile
 from html.parser import HTMLParser
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
@@ -36,7 +37,9 @@ DEFAULT_MAX_CHARS = 40_000
 MAX_RENDER_PAGES = 5
 # Longest side of rendered pages; larger images get downscaled by Claude anyway.
 RENDER_LONG_SIDE = 1568
-MAX_DOWNLOAD_MB = float(getenv("MOODLE_MAX_DOWNLOAD_MB", "10"))
+MAX_DOWNLOAD_MB = float(getenv("MOODLE_MAX_DOWNLOAD_MB", "20"))
+# Raw blobs go into the model context as base64 (+33%), so keep them smaller.
+MAX_BLOB_MB = 10
 DOWNLOAD_DIR = getenv("MOODLE_DOWNLOAD_DIR")
 
 TEXT_MIMETYPES = ("text/", "application/json", "application/xml")
@@ -56,6 +59,13 @@ class CourseFile(TypedDict):
     timemodified: int | None
     fileurl: str
     external: bool
+
+
+class ZipEntry(TypedDict):
+    path: str
+    size: int
+    compressed_size: int
+    mimetype: str | None
 
 
 class FileText(TypedDict):
@@ -311,6 +321,89 @@ def pdf_to_text(content: bytes, pages: str | None, max_chars: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Zip archives (read in memory only, nothing is extracted to disk)
+# ---------------------------------------------------------------------------
+
+
+def _zip_name(info: zipfile.ZipInfo) -> str:
+    # Without the UTF-8 flag, zipfile decodes names as cp437; archives made on
+    # Windows or macOS often hold UTF-8 names anyway (accents come out garbled).
+    if info.flag_bits & 0x800:
+        return info.filename
+    try:
+        return info.filename.encode("cp437").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return info.filename
+
+
+def _open_zip(content: bytes, filename: str) -> zipfile.ZipFile:
+    try:
+        return zipfile.ZipFile(io.BytesIO(content))
+    except zipfile.BadZipFile:
+        raise MoodleAPIError(
+            "unsupported_type", f"{filename} is not a zip archive", "zip"
+        ) from None
+
+
+def _zip_entries(archive: zipfile.ZipFile) -> list[tuple[str, zipfile.ZipInfo]]:
+    return [
+        (_zip_name(info), info)
+        for info in archive.infolist()
+        if not info.is_dir() and not _zip_name(info).startswith("__MACOSX/")
+    ]
+
+
+def _zip_member(content: bytes, filename: str, inner_path: str) -> tuple[bytes, str | None, str]:
+    """Return (content, mimetype, name) of one file inside a zip archive."""
+    archive = _open_zip(content, filename)
+    entries = _zip_entries(archive)
+    wanted = inner_path.strip().replace("\\", "/").lstrip("/")
+
+    matches = [e for e in entries if e[0] == wanted]
+    if not matches:
+        # Accept a bare file name or different case when it is unambiguous.
+        low = wanted.lower()
+        matches = [e for e in entries if e[0].lower() == low] or [
+            e for e in entries if e[0].rsplit("/", 1)[-1].lower() == low
+        ]
+    if len(matches) != 1:
+        problem = "not found in" if not matches else "is ambiguous in"
+        raise MoodleAPIError(
+            "invalid_path",
+            f"'{inner_path}' {problem} {filename}; use a path from list_zip_contents",
+            "zip",
+        )
+
+    name, info = matches[0]
+    max_bytes = int(MAX_DOWNLOAD_MB * 1024 * 1024)
+    too_large = MoodleAPIError(
+        "file_too_large",
+        f"{name} unpacks to more than {MAX_DOWNLOAD_MB:g} MB (MOODLE_MAX_DOWNLOAD_MB)",
+        "zip",
+    )
+    if info.file_size > max_bytes:
+        raise too_large
+    # The header size can lie (zip bombs), so also cap what is actually read.
+    try:
+        with archive.open(info) as f:
+            data = f.read(max_bytes + 1)
+    except (RuntimeError, NotImplementedError, zipfile.BadZipFile) as e:
+        # RuntimeError: encrypted member; NotImplementedError: unsupported compression.
+        raise MoodleAPIError("unsupported_type", f"Cannot unpack {name}: {e}", "zip") from None
+    if len(data) > max_bytes:
+        raise too_large
+
+    return data, mimetypes.guess_type(name)[0], name.rsplit("/", 1)[-1]
+
+
+def _fetch(fileurl: str, inner_path: str | None) -> tuple[bytes, str | None, str]:
+    content, mimetype, filename = fetch_file(fileurl)
+    if inner_path:
+        return _zip_member(content, filename, inner_path)
+    return content, mimetype, filename
+
+
+# ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
 
@@ -364,10 +457,40 @@ def list_course_files(
     return files
 
 
+def _looks_like_text(content: bytes) -> bool:
+    """Source code and other files with no known mimetype: UTF-8 without NUL bytes."""
+    sample = content[:8192]
+    if b"\x00" in sample:
+        return False
+    try:
+        sample.decode("utf-8")
+    except UnicodeDecodeError as e:
+        # A multibyte character cut at the end of the sample is fine.
+        return e.start >= len(sample) - 3
+    return True
+
+
+def list_zip_contents(fileurl: str) -> list[ZipEntry]:
+    content, _, filename = fetch_file(fileurl)
+    archive = _open_zip(content, filename)
+    return [
+        {
+            "path": name,
+            "size": info.file_size,
+            "compressed_size": info.compress_size,
+            "mimetype": mimetypes.guess_type(name)[0],
+        }
+        for name, info in _zip_entries(archive)
+    ]
+
+
 def read_course_file(
-    fileurl: str, pages: str | None = None, max_chars: int = DEFAULT_MAX_CHARS
+    fileurl: str,
+    pages: str | None = None,
+    max_chars: int = DEFAULT_MAX_CHARS,
+    inner_path: str | None = None,
 ) -> FileText:
-    content, mimetype, filename = fetch_file(fileurl)
+    content, mimetype, filename = _fetch(fileurl, inner_path)
     max_chars = max(1000, max_chars)
 
     is_pdf = mimetype == "application/pdf" or content[:5] == b"%PDF-"
@@ -375,7 +498,10 @@ def read_course_file(
         result = pdf_to_text(content, pages, max_chars)
         return {"filename": filename, "mimetype": "application/pdf", **result}
 
-    if mimetype and (mimetype.startswith(TEXT_MIMETYPES) or mimetype.endswith("+xml")):
+    if (mimetype and (mimetype.startswith(TEXT_MIMETYPES) or mimetype.endswith("+xml"))) or (
+        not mimetype and _looks_like_text(content)
+    ):
+        mimetype = mimetype or "text/plain"
         text = content.decode("utf-8", errors="replace")
         if mimetype == "text/html" or filename.endswith((".html", ".htm")):
             text = html_to_text(text)
@@ -389,20 +515,25 @@ def read_course_file(
             "text": text[:max_chars],
         }
 
+    if mimetype == "application/zip" or content[:4] == b"PK\x03\x04":
+        hint = "call list_zip_contents, then pass one of its paths as inner_path"
+    else:
+        hint = "use download_course_file to get the raw file"
     raise MoodleAPIError(
         "unsupported_type",
         f"Cannot extract text from {filename} ({mimetype or 'unknown type'})."
-        " Only PDF, HTML and plain text are supported; use download_course_file"
-        " to get the raw file.",
+        f" Only PDF, HTML and plain text are supported; {hint}.",
         "read_course_file",
     )
 
 
-def view_course_file_pages(fileurl: str, pages: str = "1-3") -> list:
+def view_course_file_pages(
+    fileurl: str, pages: str = "1-3", inner_path: str | None = None
+) -> list:
     """Render PDF pages as JPEG images, for scanned or handwritten documents."""
     import pypdfium2 as pdfium
 
-    content, mimetype, filename = fetch_file(fileurl)
+    content, mimetype, filename = _fetch(fileurl, inner_path)
     if not (mimetype == "application/pdf" or content[:5] == b"%PDF-"):
         raise MoodleAPIError(
             "unsupported_type",
@@ -460,6 +591,7 @@ def download_course_file(fileurl: str) -> list:
     content, mimetype, filename = fetch_file(fileurl)
     url = normalize_file_url(fileurl)
     result: list = []
+    blob_too_large = len(content) > MAX_BLOB_MB * 1024 * 1024
 
     if DOWNLOAD_DIR:
         os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -470,6 +602,17 @@ def download_course_file(fileurl: str) -> list:
             f.write(content)
         logger.info(f"Saved {filename} ({len(content)} bytes)")
         result.append(f"Saved {filename} ({len(content)} bytes) to {os.path.abspath(path)}")
+
+    if blob_too_large:
+        message = (
+            f"{filename} is {len(content) / 1_048_576:.1f} MB, too large to return inline"
+            f" (limit {MAX_BLOB_MB} MB). Use read_course_file or view_course_file_pages"
+            " (with inner_path for zip archives) to read it."
+        )
+        if not result:
+            raise MoodleAPIError("file_too_large", message, "download_course_file")
+        result.append(message)
+        return result
 
     result.append(
         EmbeddedResource(
