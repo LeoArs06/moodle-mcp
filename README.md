@@ -22,7 +22,7 @@ The server exposes the following tools.
 
 | Tool | Description |
 | --- | --- |
-| `list_course_files` | List every file in a course (resources, folders, pages) with `fileurl`, size and type; external links are flagged |
+| `list_course_files` | List files in a course (resources, folders, pages) with `fileurl`, size and type, optionally filtered by `query` or `mimetype`; external links are flagged |
 | `read_course_file` | Download a file and return its text: PDF (page by page, with ranges like `1-10`), HTML pages, plain text |
 | `download_course_file` | Return the raw file as an embedded binary resource, and save it to `MOODLE_DOWNLOAD_DIR` when set |
 

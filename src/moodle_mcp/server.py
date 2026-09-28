@@ -56,9 +56,11 @@ def get_course_content(courseid: int) -> list[api.CourseSection]:
 
 
 @mcp.tool(structured_output=False)
-def list_course_files(courseid: int) -> list[files.CourseFile]:
-    """List all files attached to a course (resources, folders, pages) with their fileurl, size and type. Entries with external=true are links to other sites and cannot be downloaded"""
-    return files.list_course_files(courseid)
+def list_course_files(
+    courseid: int, query: str | None = None, mimetype: str | None = None
+) -> list[files.CourseFile]:
+    """List files attached to a course (resources, folders, pages) with their fileurl, size and type. Large courses have hundreds of files: filter with query (words matched in filename, module or section name) and/or mimetype (prefix, e.g. 'application/pdf'). Entries with external=true are links to other sites and cannot be downloaded"""
+    return files.list_course_files(courseid, query, mimetype)
 
 
 @mcp.tool(structured_output=False)

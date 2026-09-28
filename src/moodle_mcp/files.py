@@ -135,11 +135,22 @@ def fetch_file(fileurl: str, max_bytes: int | None = None) -> tuple[bytes, str |
 
     logger.info(f"Downloading file {filename}")
     try:
-        rsp = requests.post(url, data={"token": MOODLE_TOKEN}, timeout=60, stream=True)
+        # No redirects: requests re-sends the POST body (and the token) on 307/308,
+        # possibly to another host.
+        rsp = requests.post(
+            url, data={"token": MOODLE_TOKEN}, timeout=60, stream=True, allow_redirects=False
+        )
     except requests.RequestException as e:
         raise MoodleAPIError("network_error", _redact(str(e)), "pluginfile") from None
 
     with rsp:
+        if rsp.is_redirect:
+            raise MoodleAPIError(
+                "redirect",
+                f"Moodle redirected the download of {filename}; the file may need a"
+                " browser login or live on another site",
+                "pluginfile",
+            )
         if rsp.status_code != 200:
             raise MoodleAPIError(
                 "http_error", f"HTTP {rsp.status_code} for {filename}", "pluginfile"
@@ -301,7 +312,9 @@ def pdf_to_text(content: bytes, pages: str | None, max_chars: int) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def list_course_files(courseid: int) -> list[CourseFile]:
+def list_course_files(
+    courseid: int, query: str | None = None, mimetype: str | None = None
+) -> list[CourseFile]:
     data = get_moodle_api_data(
         APIFunction.core_course_get_contents,
         params={"courseid": str(courseid)},
@@ -333,6 +346,16 @@ def list_course_files(courseid: int) -> list[CourseFile]:
                         "external": external,
                     }
                 )
+
+    if query:
+        words = query.lower().split()
+        files = [
+            f
+            for f in files
+            if all(w in f"{f['filename']} {f['module_name']} {f['section']}".lower() for w in words)
+        ]
+    if mimetype:
+        files = [f for f in files if (f["mimetype"] or "").startswith(mimetype.lower())]
 
     logger.info(f"Found {len(files)} files in course {courseid}")
     return files
