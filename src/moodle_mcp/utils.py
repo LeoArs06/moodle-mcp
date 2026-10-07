@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import datetime
 
 from dotenv import load_dotenv
 
@@ -28,3 +29,10 @@ def getenv(key: str, default: str = None) -> str:
         ENV_LOADED = True
 
     return os.getenv(key, default)
+
+
+def local_time(ts: int | None) -> str | None:
+    """Unix time as ISO 8601 in the machine's time zone (e.g. 2026-10-07T18:30+02:00)."""
+    if not ts:
+        return None
+    return datetime.fromtimestamp(ts).astimezone().isoformat(timespec="minutes")

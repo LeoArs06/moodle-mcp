@@ -288,10 +288,12 @@ def get_moodle_api_data(
     use_original_data=True,
     timeout: float | None = None,
     retries: int = MAX_RETRIES,
+    refresh: bool = False,
 ):
+    """Call a web service function. refresh=True skips (but updates) the disk cache."""
     ttl = CACHE_TTL.get(function)
     key = function.value + json.dumps(params or {}, sort_keys=True)
-    hit = cache.get("ws", key, ttl) if ttl else None
+    hit = cache.get("ws", key, ttl) if ttl and not refresh else None
     if hit:
         logger.info(f"Using cached `{function.value}`")
         data = json.loads(hit[0])

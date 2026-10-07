@@ -11,13 +11,12 @@ import io
 import json
 import logging
 import mimetypes
-import os
 import re
 import zipfile
 from html.parser import HTMLParser
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
-from mcp_types import BlobResourceContents, EmbeddedResource, ImageContent
+from mcp_types import ImageContent
 from typing_extensions import TypedDict
 
 from . import cache
@@ -51,9 +50,6 @@ NO_TEXT_SHARE = 0.6
 # Pages spread over the document that are also checked for that decision.
 SAMPLE_PAGES = 5
 MAX_DOWNLOAD_MB = float(getenv("MOODLE_MAX_DOWNLOAD_MB", "20"))
-# Raw blobs go into the model context as base64 (+33%), so keep them smaller.
-MAX_BLOB_MB = 10
-DOWNLOAD_DIR = getenv("MOODLE_DOWNLOAD_DIR")
 
 TEXT_MIMETYPES = ("text/", "application/json", "application/xml")
 
@@ -634,7 +630,7 @@ def read_course_file(
     if mimetype == "application/zip" or content[:4] == b"PK\x03\x04":
         hint = "call list_zip_contents, then pass one of its paths as inner_path"
     else:
-        hint = "use download_course_file to get the raw file"
+        hint = "this server cannot read it, open it in Moodle instead"
     raise MoodleAPIError(
         "unsupported_type",
         f"Cannot extract text from {filename} ({mimetype or 'unknown type'})."
@@ -714,70 +710,3 @@ def view_course_file_pages(
         return result
     finally:
         pdf.close()
-
-
-def _safe_filename(name: str) -> str:
-    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip(" .")
-    return name or "file"
-
-
-def _file_summary(content: bytes, mimetype: str | None, filename: str) -> dict:
-    """Metadata and next steps for a file too large to return as a blob."""
-    summary: dict = {
-        "filename": filename,
-        "mimetype": mimetype,
-        "size_mb": round(len(content) / 1_048_576, 1),
-        "returned_inline": False,
-        "reason": f"larger than {MAX_BLOB_MB} MB",
-    }
-    if mimetype == "application/pdf" or content[:5] == b"%PDF-":
-        try:
-            from pypdf import PdfReader
-
-            summary["pages_total"] = len(PdfReader(io.BytesIO(content)).pages)
-        except Exception:
-            pass
-        summary["next_step"] = (
-            "read_course_file with pages='1-10' (then next_pages), or"
-            " view_course_file_pages for scanned or handwritten pages"
-        )
-    elif mimetype == "application/zip" or content[:4] == b"PK\x03\x04":
-        summary["next_step"] = "list_zip_contents, then read one file with inner_path"
-    else:
-        summary["next_step"] = "read_course_file if it is text, PDF or HTML"
-    return summary
-
-
-def download_course_file(fileurl: str) -> list:
-    """Return the raw file as an embedded resource, and save it to
-    MOODLE_DOWNLOAD_DIR when that is set."""
-    content, mimetype, filename = fetch_file(fileurl)
-    url = normalize_file_url(fileurl)
-    result: list = []
-    blob_too_large = len(content) > MAX_BLOB_MB * 1024 * 1024
-
-    if DOWNLOAD_DIR:
-        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-        # Prefix with the context id so same-named files from different courses don't collide.
-        context_id = url.split(PLUGINFILE_PATH + "/", 1)[1].split("/", 1)[0]
-        path = os.path.join(DOWNLOAD_DIR, f"{context_id}_{_safe_filename(filename)}")
-        with open(path, "wb") as f:
-            f.write(content)
-        logger.info(f"Saved {filename} ({len(content)} bytes)")
-        result.append(f"Saved {filename} ({len(content)} bytes) to {os.path.abspath(path)}")
-
-    if blob_too_large:
-        result.append(json.dumps(_file_summary(content, mimetype, filename), ensure_ascii=False))
-        return result
-
-    result.append(
-        EmbeddedResource(
-            type="resource",
-            resource=BlobResourceContents(
-                uri=url,
-                mime_type=mimetype or "application/octet-stream",
-                blob=base64.b64encode(content).decode("ascii"),
-            ),
-        )
-    )
-    return result

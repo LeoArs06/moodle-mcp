@@ -7,7 +7,6 @@ refuses such functions (moodle.DENIED_FUNCTION).
 
 import re
 import time
-from datetime import datetime
 from html.parser import HTMLParser
 
 from typing_extensions import TypedDict
@@ -16,6 +15,7 @@ from .api import get_my_courses
 from .files import html_to_text
 from .logger import logger
 from .moodle import APIFunction, MoodleAPIError, format_moodle_array_params, get_moodle_api_data
+from .utils import local_time
 
 INTRO_MAX_CHARS = 1500
 
@@ -67,12 +67,6 @@ class QuizReview(TypedDict):
     questions: list[QuizQuestion]
 
 
-def _local_time(ts: int | None) -> str | None:
-    if not ts:
-        return None
-    return datetime.fromtimestamp(ts).astimezone().isoformat(timespec="minutes")
-
-
 def _finished_attempts(quizid: int) -> tuple[list[dict], bool]:
     """Return (finished attempts, whether an attempt is still open)."""
     data = get_moodle_api_data(
@@ -117,9 +111,9 @@ def get_quizzes(courseids: list[int] | None = None) -> list[Quiz]:
                 "name": quiz.get("name", ""),
                 "intro": intro[:INTRO_MAX_CHARS],
                 "timeopen": timeopen,
-                "timeopen_local": _local_time(timeopen),
+                "timeopen_local": local_time(timeopen),
                 "timeclose": timeclose,
-                "timeclose_local": _local_time(timeclose),
+                "timeclose_local": local_time(timeclose),
                 "open_now": (not timeopen or timeopen <= now) and (not timeclose or now < timeclose),
                 "timelimit_minutes": round(timelimit / 60, 1) if timelimit else None,
                 # 0 means unlimited; None when Moodle does not tell the student.
@@ -273,8 +267,8 @@ def get_quiz_review(quizid: int, attemptid: int | None = None) -> QuizReview:
             {
                 "id": a["id"],
                 "attempt": a.get("attempt"),
-                "timestart_local": _local_time(a.get("timestart")),
-                "timefinish_local": _local_time(a.get("timefinish")),
+                "timestart_local": local_time(a.get("timestart")),
+                "timefinish_local": local_time(a.get("timefinish")),
                 "sumgrades": _as_float(a.get("sumgrades")),
             }
             for a in finished

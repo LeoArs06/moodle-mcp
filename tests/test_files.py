@@ -1,4 +1,3 @@
-import json
 import os
 import time
 
@@ -146,20 +145,6 @@ def test_view_pages_respects_byte_budget(fake_moodle, monkeypatch):
     result = files.view_course_file_pages(PDF_URL, pages="1-3")
     assert len([r for r in result if not isinstance(r, str)]) == 1
     assert "pages='2-3'" in result[0]
-
-
-# --- downloads ---------------------------------------------------------------
-
-
-def test_large_download_returns_metadata_instead_of_failing(fake_moodle, monkeypatch):
-    monkeypatch.setattr(files, "MAX_BLOB_MB", 0)
-    monkeypatch.setattr(files, "DOWNLOAD_DIR", None)
-    fake_moodle.responses[files.normalize_file_url(PDF_URL)] = pdf_response(make_pdf([TYPED] * 3))
-    [summary] = files.download_course_file(PDF_URL)
-    summary = json.loads(summary)
-    assert summary["returned_inline"] is False
-    assert summary["pages_total"] == 3
-    assert "read_course_file" in summary["next_step"]
 
 
 # --- cache -------------------------------------------------------------------

@@ -12,7 +12,6 @@ from pathlib import Path
 os.environ["MOODLE_URL"] = "https://moodle.example.org/webservice/rest/server.php"
 os.environ["MOODLE_TOKEN"] = "0123456789abcdef0123456789abcdef"
 os.environ["MOODLE_MCP_CACHE_DIR"] = ""
-os.environ.pop("MOODLE_DOWNLOAD_DIR", None)
 
 import pytest  # noqa: E402
 import requests  # noqa: E402

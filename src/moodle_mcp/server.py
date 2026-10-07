@@ -1,12 +1,14 @@
 import functools
+import json
 import logging
 import time
 from importlib.metadata import PackageNotFoundError, version
+from typing import Literal
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from mcp_types import EmbeddedResource, ImageContent
+from mcp_types import ImageContent
 
 from . import api, files, quiz
 from .moodle import (
@@ -30,50 +32,28 @@ DOWNLOADFILES = "downloadfiles"
 
 _ENROL = "core_enrol_get_users_courses"
 _CONTENTS = "core_course_get_contents"
-_ASSIGNS = "mod_assign_get_assignments"
-_SUBMISSION = "mod_assign_get_submission_status"
-_GRADES_OVERVIEW = "gradereport_overview_get_course_grades"
-_GRADE_ITEMS = "gradereport_user_get_grade_items"
-_UPCOMING = "core_calendar_get_calendar_upcoming_view"
 
 # Web service functions each tool cannot work without. Tools whose functions
 # are not enabled for the token are not registered (see apply_availability).
-# Optional calls with a fallback (e.g. completion status) are not listed.
+# Calls a tool can do without are not listed.
 TOOL_WS: dict[str, tuple[str, ...]] = {
     "diagnose": ("core_webservice_get_site_info",),
-    "get_upcoming_events": (_UPCOMING,),
     "get_my_courses": (_ENROL,),
     "get_course_content": (_CONTENTS,),
     "list_course_files": (_CONTENTS,),
     "read_course_file": (DOWNLOADFILES,),
     "list_zip_contents": (DOWNLOADFILES,),
     "view_course_file_pages": (DOWNLOADFILES,),
-    "download_course_file": (DOWNLOADFILES,),
-    "get_assignments": (_ASSIGNS,),
-    "get_assignment_status": (_SUBMISSION,),
-    "get_upcoming_deadlines": (_ASSIGNS, _SUBMISSION),
-    "get_grades": (_GRADES_OVERVIEW, _GRADE_ITEMS, _ENROL),
+    "get_upcoming_events": ("core_calendar_get_calendar_upcoming_view",),
+    "get_assignments": ("mod_assign_get_assignments", "mod_assign_get_submission_status"),
+    "get_grades": ("gradereport_overview_get_course_grades", "gradereport_user_get_grade_items", _ENROL),
     "search_course_materials": (_ENROL, _CONTENTS),
-    "semester_dashboard": (_ENROL, _ASSIGNS, _SUBMISSION),
-    "get_actionable_tasks": (_ASSIGNS, _SUBMISSION),
-    "get_overdue_assignments": (_ASSIGNS, _SUBMISSION),
-    "get_recent_activity": (_ENROL, "core_course_get_updates_since"),
+    "get_recent_activity": (_ENROL, "core_course_get_updates_since", _CONTENTS),
     "get_course_announcements": (
         _ENROL,
         "mod_forum_get_forums_by_courses",
         "mod_forum_get_forum_discussions",
     ),
-    "get_course_health": (_ENROL, _ASSIGNS, _SUBMISSION),
-    "get_course_progress": (_ENROL,),
-    "get_study_load": (_ASSIGNS,),
-    "daily_briefing": (_ASSIGNS, _SUBMISSION, _UPCOMING),
-    "weekly_review": (_ENROL, _ASSIGNS, _SUBMISSION),
-    "ask_moodle": (_ENROL,),
-    "analyze_assignment": (_ASSIGNS, _SUBMISSION),
-    "extract_assignment_requirements": (_ASSIGNS,),
-    "find_relevant_materials": (_ASSIGNS, _CONTENTS),
-    "decompose_task": (_ASSIGNS,),
-    "create_implementation_plan": (_ASSIGNS,),
     "get_quizzes": (_ENROL, "mod_quiz_get_quizzes_by_courses"),
     "get_quiz_review": ("mod_quiz_get_user_attempts", "mod_quiz_get_attempt_review"),
 }
@@ -225,20 +205,14 @@ def diagnose(include_all_functions: bool = False) -> dict:
 
 
 @tool
-def get_upcoming_events() -> list[api.UpcomingEvent]:
-    """Get upcoming events from moodle"""
-    return api.get_upcoming_events()
-
-
-@tool
 def get_my_courses() -> list[api.Course]:
-    """Get all courses the current user is enrolled in"""
+    """Courses the user is enrolled in: id, fullname, progress. Name courses by fullname; shortname is often an internal code"""
     return api.get_my_courses()
 
 
 @tool
 def get_course_content(courseid: int) -> list[api.CourseSection]:
-    """Get sections and modules for a specific course by its ID"""
+    """Sections and activities of a course, with the files of each activity. Long for large courses: to find files, list_course_files is shorter"""
     return api.get_course_content(courseid)
 
 
@@ -280,135 +254,44 @@ def view_course_file_pages(
 
 
 @tool
-def download_course_file(fileurl: str) -> list[str | EmbeddedResource]:
-    """Download a course file as-is and return it as an embedded binary resource (also saved to MOODLE_DOWNLOAD_DIR on the server when configured). Files over 10 MB return only metadata and how to read them. Prefer read_course_file to read the content"""
-    return files.download_course_file(fileurl)
+def get_upcoming_events() -> list[api.UpcomingEvent]:
+    """Upcoming calendar events of all courses (deadlines, quiz closing times, bookings, ...) with local start and end time. instance is the id of the activity, e.g. a quiz id for get_quiz_review"""
+    return api.get_upcoming_events()
 
 
 @tool
-def get_assignments(courseids: list[int] | None = None) -> list[api.Assignment]:
-    """Get assignments for courses. Optionally filter by course IDs. Returns all enrolled courses' assignments if no course IDs are provided."""
-    return api.get_assignments(courseids)
-
-
-@tool
-def get_assignment_status(assignid: int) -> api.AssignmentStatus:
-    """Get submission and grading status for a specific assignment by its ID"""
-    return api.get_assignment_status(assignid)
-
-
-@tool
-def get_upcoming_deadlines() -> list[api.UpcomingDeadline]:
-    """Get upcoming assignment deadlines across all courses, sorted by due date"""
-    return api.get_upcoming_deadlines()
+def get_assignments(
+    courseids: list[int] | None = None,
+    only: Literal["upcoming", "overdue", "all"] = "upcoming",
+) -> list[api.Assignment]:
+    """Assignments with local due date, days_until_due, submission and grading status, and description. only: 'upcoming' (default), 'overdue' (past due and not submitted) or 'all' (slower: one status request per assignment). Optionally limited to courseids"""
+    return api.get_assignments(courseids, only)
 
 
 @tool
 def get_grades(courseid: int | None = None) -> list[api.CourseGrade] | list[api.GradeItem]:
-    """Get grade overview for all courses, or detailed grades for a specific course if courseid is provided"""
+    """Grades: one line per course, or the grade items with feedback of one course when courseid is given"""
     return api.get_grades(courseid)
 
 
 @tool
 def search_course_materials(query: str) -> list[api.SearchResult]:
-    """Search across all course materials by query string"""
+    """Find activities and files whose name, file name or section name contains query, across all enrolled courses. Matches names only, not the text inside files"""
     return api.search_course_materials(query)
 
 
 @tool
-def semester_dashboard() -> api.SemesterDashboard:
-    """Get an aggregated overview combining courses, upcoming deadlines, and grades"""
-    return api.semester_dashboard()
+def get_recent_activity(days: int = 7, courseid: int | None = None) -> list[api.RecentActivity]:
+    """Activities created or changed in the last days (default 7): course, section, activity name, kind of change (configuration, contentfiles, discussions, ...) and when. Optionally a single course"""
+    return api.get_recent_activity(days, courseid)
 
 
 @tool
-def get_actionable_tasks() -> list[api.ActionableTask]:
-    """Returns prioritized list of tasks needing action, sorted by urgency (overdue first)"""
-    return api.get_actionable_tasks()
-
-
-@tool
-def get_overdue_assignments() -> list[api.OverdueAssignment]:
-    """Returns assignments past due date that are unsubmitted, sorted by most overdue first"""
-    return api.get_overdue_assignments()
-
-
-@tool
-def get_recent_activity(since: int | None = None) -> list[api.RecentActivity]:
-    """Returns recent activity/updates across courses. Optionally specify 'since' as Unix timestamp (defaults to 7 days ago)"""
-    return api.get_recent_activity(since)
-
-
-@tool
-def get_course_announcements(courseid: int | None = None) -> list[api.CourseAnnouncement]:
-    """Gets announcements from course news forums. Optionally filter by course ID"""
-    return api.get_course_announcements(courseid)
-
-
-@tool
-def get_course_health(courseid: int) -> api.CourseHealth:
-    """Overall health check for a course: progress, grades, unsubmitted/overdue counts"""
-    return api.get_course_health(courseid)
-
-
-@tool
-def get_course_progress(courseid: int | None = None) -> list[api.CourseProgress]:
-    """Progress/completion for courses. Optionally specify a course ID, or get all courses"""
-    return api.get_course_progress(courseid)
-
-
-@tool
-def get_study_load() -> api.StudyLoad:
-    """Study load analysis showing assignment distribution by week, identifying heavy weeks"""
-    return api.get_study_load()
-
-
-@tool
-def daily_briefing() -> api.DailyBriefing:
-    """Aggregated daily summary: overdue count, today's deadlines, recent grades, upcoming events, actionable tasks"""
-    return api.daily_briefing()
-
-
-@tool
-def weekly_review() -> api.WeeklyReview:
-    """Aggregated weekly summary: submitted/graded counts, upcoming deadlines, overdue count, progress"""
-    return api.weekly_review()
-
-
-@tool
-def ask_moodle(question: str) -> api.MoodleAnswer:
-    """Ask a natural language question about your Moodle data. Routes to the right data sources based on your question"""
-    return api.ask_moodle(question)
-
-
-@tool
-def analyze_assignment(assignid: int) -> api.AssignmentAnalysis:
-    """Comprehensive analysis of an assignment: status, requirements, materials count, course progress, and deadline info"""
-    return api.analyze_assignment(assignid)
-
-
-@tool
-def extract_assignment_requirements(assignid: int) -> api.AssignmentRequirements:
-    """Extract and structure requirements, deliverables, constraints, and evaluation criteria from an assignment description"""
-    return api.extract_assignment_requirements(assignid)
-
-
-@tool
-def find_relevant_materials(assignid: int) -> api.RelevantMaterials:
-    """Find course content and search results relevant to a specific assignment, ranked by relevance"""
-    return api.find_relevant_materials(assignid)
-
-
-@tool
-def decompose_task(assignid: int) -> api.TaskDecomposition:
-    """Break down an assignment into subtasks with estimated effort, dependencies, and critical path"""
-    return api.decompose_task(assignid)
-
-
-@tool
-def create_implementation_plan(assignid: int) -> api.ImplementationPlan:
-    """Create a step-by-step implementation plan for completing an assignment, with timeline, resources, milestones, and risk factors"""
-    return api.create_implementation_plan(assignid)
+def get_course_announcements(
+    courseid: int | None = None, days: int | None = None
+) -> list[api.CourseAnnouncement]:
+    """Posts in the announcement (news) forums of the courses, newest first, as text. Optionally a single course and/or only the last days"""
+    return api.get_course_announcements(courseid, days)
 
 
 @tool
@@ -421,6 +304,96 @@ def get_quizzes(courseids: list[int] | None = None) -> list[quiz.Quiz]:
 def get_quiz_review(quizid: int, attemptid: int | None = None) -> quiz.QuizReview:
     """Review of a finished quiz attempt: each question with the given answer, state, marks and feedback, as far as the quiz settings allow the student to see them. Defaults to the latest finished attempt; attempts still in progress are never opened"""
     return quiz.get_quiz_review(quizid, attemptid)
+
+
+# ---------------------------------------------------------------------------
+# Prompts: picked by the user from the client's menu. They only say which
+# tools to use and how to present the result; facts come from the tools.
+# ---------------------------------------------------------------------------
+
+_NO_GUESSING = (
+    "Se uno strumento fallisce o non restituisce dati, dillo esplicitamente"
+    " invece di dedurre o riempire i vuoti."
+)
+
+
+@mcp.prompt(name="briefing", description="Scadenze dei prossimi 7 giorni, annunci recenti e quiz aperti, per tutti i corsi")
+def briefing_prompt() -> str:
+    return (
+        "Preparami il briefing di oggi da Moodle.\n"
+        "- Scadenze dei prossimi 7 giorni: get_upcoming_events e get_assignments.\n"
+        "- Annunci degli ultimi 7 giorni: get_course_announcements con days=7.\n"
+        "- Quiz che posso ancora fare: get_quizzes, quelli con open_now vero e attempts_left diverso da 0.\n"
+        "Rispondi con tre sezioni brevi (Scadenze, Annunci, Quiz aperti), in ordine di data,"
+        " indicando il corso con il nome completo e data e ora locali.\n" + _NO_GUESSING
+    )
+
+
+@mcp.prompt(name="prepara-lezione", description="Trova il materiale di una lezione e prepara un percorso di lettura")
+def prepare_lesson_prompt(corso: str | None = None, argomento: str | None = None) -> str:
+    target = "Aiutami a preparare una lezione"
+    if corso:
+        target += f" del corso «{corso}»"
+    if argomento:
+        target += f" sull'argomento «{argomento}»"
+    return (
+        f"{target}.\n"
+        "- Individua il corso con get_my_courses; se non è chiaro quale, chiedimelo.\n"
+        "- Trova il materiale con list_course_files (filtra con query) o get_course_content.\n"
+        "- Leggi i file con read_course_file; per le pagine senza testo usa view_course_file_pages.\n"
+        "Restituisci prima l'elenco dei file trovati (nome, sezione, pagine), poi un percorso di lettura"
+        " con le pagine da leggere e cosa contengono. Riassumi solo ciò che hai letto davvero.\n" + _NO_GUESSING
+    )
+
+
+@mcp.prompt(name="revisione-quiz", description="Rivede un quiz chiuso ed elenca gli errori da ripassare")
+def quiz_review_prompt(corso: str | None = None, quiz: str | None = None) -> str:
+    target = "Rivediamo un quiz che ho già completato"
+    if quiz:
+        target += f" («{quiz}»)"
+    if corso:
+        target += f" del corso «{corso}»"
+    return (
+        f"{target}.\n"
+        "- Con get_quizzes trova i quiz con almeno un tentativo completato; se non ho indicato quale"
+        " e ce n'è più di uno, prendi quello con il tentativo più recente e dimmi quale hai scelto.\n"
+        "- Usa get_quiz_review. Per ogni domanda sbagliata o con punteggio parziale riporta: la domanda"
+        " in breve, la mia risposta, la risposta corretta se Moodle la mostra, il concetto da ripassare.\n"
+        "- Chiudi con i 2-3 argomenti da ripassare per primi.\n"
+        "Non avviare mai un nuovo tentativo. Se la revisione non è consentita dalle impostazioni del quiz,"
+        " dillo.\n" + _NO_GUESSING
+    )
+
+
+@mcp.prompt(name="settimana", description="Cosa è uscito questa settimana su ogni corso")
+def week_prompt() -> str:
+    return (
+        "Fammi il riepilogo della settimana su Moodle (ultimi 7 giorni).\n"
+        "- Nuovi materiali e attività modificate: get_recent_activity con days=7.\n"
+        "- Annunci: get_course_announcements con days=7.\n"
+        "- In arrivo nei prossimi 7 giorni: get_upcoming_events, get_assignments e get_quizzes.\n"
+        "Una sezione per corso (nome completo) con elenchi brevi; i corsi senza novità in una riga finale.\n"
+        + _NO_GUESSING
+    )
+
+
+# ---------------------------------------------------------------------------
+# Resources
+# ---------------------------------------------------------------------------
+
+
+@mcp.resource(
+    "moodle://courses",
+    name="courses",
+    description="Enrolled courses: id, fullname, shortname",
+    mime_type="application/json",
+)
+def courses_resource() -> str:
+    courses = [
+        {"id": c["id"], "fullname": c["fullname"], "shortname": c["shortname"]}
+        for c in api.get_my_courses()
+    ]
+    return json.dumps(courses, ensure_ascii=False, indent=1)
 
 
 def main():
