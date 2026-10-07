@@ -12,6 +12,7 @@ import json
 import logging
 import mimetypes
 import re
+import unicodedata
 import zipfile
 from html.parser import HTMLParser
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
@@ -324,12 +325,27 @@ def _format_ranges(indexes: list[int]) -> str:
     return ",".join(ranges)
 
 
+def _is_ocr_noise(text: str) -> bool:
+    """True for the OCR layer of handwritten pages, which is not worth reading.
+
+    Measured on lecture whiteboards: words run together ("unacurvageometrica"),
+    so spaces are 1-3% of the characters against 10-20% in typed documents,
+    and the recognizer mixes in letters of other scripts (CJK, Devanagari).
+    """
+    letters = [c for c in text if c.isalpha()]
+    foreign = sum(1 for c in letters if unicodedata.name(c, "").split(" ")[0] not in ("LATIN", "GREEK"))
+    if letters and foreign > 0.03 * len(letters):
+        return True
+    # Long typed pages extracted without spaces are still readable text.
+    return len(text) < 1500 and text.count(" ") < 0.05 * len(text)
+
+
 def _meaningful_chars(text: str) -> int:
-    """Letters and digits, ignoring OCR noise such as private-use glyphs."""
+    """Letters and digits, ignoring OCR noise (private-use glyphs, handwriting OCR)."""
     if not text:
         return 0
     junk = sum(1 for c in text if c == "\ufffd" or "\ue000" <= c <= "\uf8ff")
-    if junk > 0.3 * len(text):
+    if junk > 0.3 * len(text) or _is_ocr_noise(text):
         return 0
     return sum(1 for c in text if c.isalnum())
 

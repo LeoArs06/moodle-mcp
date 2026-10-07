@@ -109,6 +109,29 @@ def test_single_page_handwritten_pdf_is_detected(fake_moodle):
     assert files.read_course_file(PDF_URL)["has_text_layer"] is False
 
 
+GLUED_OCR = (
+    '"NOTALLTHOSEWHOWANDERARELOST"\nOGGI:\ndescrizionimatematicheper" unacurva\ngeometrica"\n'
+    'RICHIAMI "curvaparametrica":continua\nregolare"intervallo/vettoretangente/velocita\n'
+    "Intalcase rettatangentealgraficoinunpuntoregolare"
+)
+
+
+def test_handwriting_ocr_layer_is_not_text():
+    # Words run together, almost no spaces.
+    assert files._meaningful_chars(GLUED_OCR) == 0
+    # Mixed scripts from a confused recognizer.
+    assert files._meaningful_chars("vettori nello spazio Euclideo 知 ॳ Ӓ さ x+y ⼆ 上 りうて") == 0
+    # Typed Italian text with Greek letters is fine.
+    assert files._meaningful_chars("Sia α un angolo e β la sua ampiezza, allora vale la relazione") > 0
+
+
+def test_pdf_with_glued_ocr_layer_counts_as_handwritten(fake_moodle):
+    fake_moodle.responses[files.normalize_file_url(PDF_URL)] = pdf_response(make_pdf([GLUED_OCR.replace("\n", " ")] * 3))
+    result = files.read_course_file(PDF_URL)
+    assert result["has_text_layer"] is False
+    assert result["text"] == ""
+
+
 def test_ocr_noise_counts_as_no_text():
     assert files._meaningful_chars("�" * 30) == 0
     assert files._meaningful_chars(TYPED) > files.MIN_PAGE_CHARS
