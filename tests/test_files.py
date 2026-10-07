@@ -95,6 +95,21 @@ def test_slides_with_some_image_pages_still_return_text(fake_moodle):
     assert "spazio vettoriale" in result["text"]
 
 
+def test_title_page_alone_does_not_make_a_typed_pdf_handwritten(fake_moodle):
+    pages = ["Titolo", TYPED, TYPED, TYPED, TYPED]
+    fake_moodle.responses[files.normalize_file_url(PDF_URL)] = pdf_response(make_pdf(pages))
+    result = files.read_course_file(PDF_URL, pages="1")
+
+    assert result["has_text_layer"] == "partial"
+    assert result["pages_without_text"] == "1"
+    assert "handwritten" not in (result["hint"] or "")
+
+
+def test_single_page_handwritten_pdf_is_detected(fake_moodle):
+    fake_moodle.responses[files.normalize_file_url(PDF_URL)] = pdf_response(make_pdf(["Pag 1"]))
+    assert files.read_course_file(PDF_URL)["has_text_layer"] is False
+
+
 def test_ocr_noise_counts_as_no_text():
     assert files._meaningful_chars("�" * 30) == 0
     assert files._meaningful_chars(TYPED) > files.MIN_PAGE_CHARS

@@ -48,6 +48,8 @@ MIN_PAGE_CHARS = 50
 # Share of such pages above which a PDF counts as scanned or handwritten.
 # Slides often have a few near-empty pages; handwritten notes have almost all.
 NO_TEXT_SHARE = 0.6
+# Pages spread over the document that are also checked for that decision.
+SAMPLE_PAGES = 5
 MAX_DOWNLOAD_MB = float(getenv("MOODLE_MAX_DOWNLOAD_MB", "20"))
 # Raw blobs go into the model context as base64 (+33%), so keep them smaller.
 MAX_BLOB_MB = 10
@@ -347,16 +349,23 @@ def pdf_to_text(content: bytes, pages: str | None, max_chars: int) -> dict:
     except Exception as e:
         raise MoodleAPIError("invalid_pdf", f"Cannot read PDF: {e}", "read_course_file") from None
 
+    texts: dict[int, str] = {}
+
+    def page_text(idx: int) -> str:
+        if idx not in texts:
+            try:
+                texts[idx] = (reader.pages[idx].extract_text() or "").strip()
+            except Exception as e:
+                texts[idx] = f"[text extraction failed: {e}]"
+        return texts[idx]
+
     wanted = _parse_pages(pages, total)
     parts: list[str] = []
     done: list[int] = []
     empty: list[int] = []
     used = 0
     for idx in wanted:
-        try:
-            text = (reader.pages[idx].extract_text() or "").strip()
-        except Exception as e:
-            text = f"[text extraction failed: {e}]"
+        text = page_text(idx)
         if _meaningful_chars(text) < MIN_PAGE_CHARS:
             empty.append(idx)
             block = f"--- page {idx + 1} ---\n[little or no text: image, diagram, scan or handwriting]"
@@ -388,7 +397,11 @@ def pdf_to_text(content: bytes, pages: str | None, max_chars: int) -> dict:
         "text": "\n\n".join(parts),
     }
 
-    if done and len(empty) >= NO_TEXT_SHARE * len(done):
+    # Judge the whole document, not just the requested pages: a slide deck
+    # read from its title page would otherwise look handwritten.
+    sample = set(done) | {round(i * (total - 1) / (SAMPLE_PAGES - 1)) for i in range(SAMPLE_PAGES)}
+    sample_empty = [i for i in sample if _meaningful_chars(page_text(i)) < MIN_PAGE_CHARS]
+    if done and empty and len(sample_empty) >= NO_TEXT_SHARE * len(sample):
         # Mostly scans or handwriting: the few characters found are headers or
         # OCR noise, so they are not returned.
         suggested = _format_ranges(empty[:MAX_RENDER_PAGES])
