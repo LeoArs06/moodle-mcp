@@ -35,6 +35,7 @@ class Quiz(TypedDict):
     timelimit_minutes: float | None
     attempts_allowed: int | None
     attempts_finished: int
+    attempts_left: int | None
     attempt_in_progress: bool
     last_finished_attempt_id: int | None
 
@@ -106,6 +107,7 @@ def get_quizzes(courseids: list[int] | None = None) -> list[Quiz]:
         timeopen, timeclose = quiz.get("timeopen") or 0, quiz.get("timeclose") or 0
         intro = html_to_text(quiz.get("intro") or "")
         timelimit = quiz.get("timelimit")
+        allowed = quiz.get("attempts")
         result.append(
             {
                 "id": quiz["id"],
@@ -121,8 +123,10 @@ def get_quizzes(courseids: list[int] | None = None) -> list[Quiz]:
                 "open_now": (not timeopen or timeopen <= now) and (not timeclose or now < timeclose),
                 "timelimit_minutes": round(timelimit / 60, 1) if timelimit else None,
                 # 0 means unlimited; None when Moodle does not tell the student.
-                "attempts_allowed": quiz.get("attempts"),
+                "attempts_allowed": allowed,
                 "attempts_finished": len(finished),
+                # None when unlimited or unknown.
+                "attempts_left": max(allowed - len(finished), 0) if allowed else None,
                 "attempt_in_progress": in_progress,
                 "last_finished_attempt_id": finished[-1]["id"] if finished else None,
             }

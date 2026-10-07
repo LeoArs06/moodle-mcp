@@ -10,6 +10,7 @@ from mcp_types import EmbeddedResource, ImageContent
 
 from . import api, files, quiz
 from .moodle import (
+    MOODLE_URL,
     ErrorKind,
     MoodleAPIError,
     current_tool,
@@ -73,7 +74,7 @@ TOOL_WS: dict[str, tuple[str, ...]] = {
     "find_relevant_materials": (_ASSIGNS, _CONTENTS),
     "decompose_task": (_ASSIGNS,),
     "create_implementation_plan": (_ASSIGNS,),
-    "get_quizzes": (_ENROL, "mod_quiz_get_quizzes_by_courses", "mod_quiz_get_user_attempts"),
+    "get_quizzes": (_ENROL, "mod_quiz_get_quizzes_by_courses"),
     "get_quiz_review": ("mod_quiz_get_user_attempts", "mod_quiz_get_attempt_review"),
 }
 
@@ -175,7 +176,18 @@ def apply_availability(timeout: float = 10) -> None:
 def diagnose(include_all_functions: bool = False) -> dict:
     """Check the Moodle connection and what this token allows: user, Moodle version, the web service functions each tool needs and whether they are enabled, and the tools disabled at startup. Call this when a tool fails and the reason is unclear. include_all_functions lists every enabled function (long)"""
     started = time.monotonic()
-    info = get_site_info(refresh=True)
+    try:
+        # A diagnosis should come back quickly, so no retries here.
+        info = get_site_info(refresh=True, timeout=15, retries=0)
+    except MoodleAPIError as e:
+        result = {
+            "connection": {"ok": False, "error": e.to_dict()},
+            "moodle_url": MOODLE_URL,
+            "tools_disabled_at_startup": unavailable_tools,
+        }
+        if startup_probe_error:
+            result["startup_probe_error"] = startup_probe_error
+        return result
     elapsed_ms = round((time.monotonic() - started) * 1000)
     enabled = {f["name"] for f in info.get("functions") or []}
     needed = sorted({f for reqs in TOOL_WS.values() for f in reqs if f != DOWNLOADFILES})
@@ -401,7 +413,7 @@ def create_implementation_plan(assignid: int) -> api.ImplementationPlan:
 
 @tool
 def get_quizzes(courseids: list[int] | None = None) -> list[quiz.Quiz]:
-    """List quizzes of the enrolled courses (or of courseids): opening and closing time, time limit, attempts allowed (0 = unlimited) and how many the user has finished. Read-only: this server never starts or submits an attempt"""
+    """List quizzes of the enrolled courses (or of courseids): opening and closing time, time limit, attempts allowed (0 = unlimited), finished and left. Read-only: this server never starts or submits an attempt"""
     return quiz.get_quizzes(courseids)
 
 

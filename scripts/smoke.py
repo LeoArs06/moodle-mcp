@@ -32,6 +32,9 @@ def main() -> int:
     failed = False
 
     diag = call("diagnose")
+    if diag and not diag[0]["connection"]["ok"]:
+        print(f"     {diag[0]['connection']['error']}")
+        return 1
     if diag:
         d = diag[0]
         print(f"     Moodle {d['site']['release']}, {d['token']['functions_enabled']} functions enabled")
@@ -42,12 +45,13 @@ def main() -> int:
     courses = call("get_my_courses")
     failed |= courses is None
     for course in courses or []:
-        print(f"     {course['id']}: {course['shortname']}")
+        print(f"     {course['id']}: {course['fullname']}")
 
     quizzes = call("get_quizzes")
     failed |= quizzes is None
     if quizzes:
-        print(f"     {len(quizzes)} quizzes, {sum(q['open_now'] for q in quizzes)} open now")
+        can_take = [q for q in quizzes if q['open_now'] and q['attempts_left'] != 0]
+        print(f"     {len(quizzes)} quizzes, {len(can_take)} open with attempts left")
 
     pdf = None
     for course in courses or []:

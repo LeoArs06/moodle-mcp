@@ -137,6 +137,7 @@ def test_get_quizzes(fake_moodle, site_info, monkeypatch):
     assert q["timelimit_minutes"] == 30
     assert q["attempts_allowed"] == 1
     assert q["attempts_finished"] == 1
+    assert q["attempts_left"] == 0
     assert q["last_finished_attempt_id"] == 100
     assert q["intro"] == "Limiti"
     assert q["course_name"] == "Analisi 1"

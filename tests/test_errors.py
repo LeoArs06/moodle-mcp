@@ -198,3 +198,11 @@ def test_diagnose_reports_missing_functions_without_secrets(fake_moodle, site_in
     assert "get_recent_activity" in result["tools_unavailable_now"]
     assert site_info["userprivateaccesskey"] not in json.dumps(moodle.redact_result(result))
     assert "functions" not in result
+
+
+def test_diagnose_reports_an_unreachable_moodle(fake_moodle):
+    fake_moodle.responses["core_webservice_get_site_info"] = requests.ConnectionError("down")
+    result = server.diagnose()
+    assert result["connection"]["ok"] is False
+    assert result["connection"]["error"]["kind"] == "network"
+    assert fake_moodle.count("core_webservice_get_site_info") == 1
