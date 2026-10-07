@@ -6,65 +6,71 @@
 
 ## Features
 
-The server exposes the following tools.
+The server is read-only. It exposes 15 data tools, 4 prompts and one resource.
 
-### Courses & content
+### Tools and the web service functions they need
 
-| Tool | Description |
-| --- | --- |
-| `get_my_courses` | Get all courses the current user is enrolled in |
-| `get_course_content` | Get sections and modules for a specific course by its ID |
-| `search_course_materials` | Search across all course materials by query string |
-| `get_course_announcements` | Get announcements from course news forums, optionally filtered by course ID |
-| `get_recent_activity` | Get recent activity and updates across courses since a given time |
+| Tool | What it returns | Moodle web service functions |
+| --- | --- | --- |
+| `diagnose` | User, Moodle release, which functions each tool needs and whether the token has them, tools disabled at startup | `core_webservice_get_site_info` |
+| `get_my_courses` | Enrolled courses (id, fullname, progress) | `core_enrol_get_users_courses` |
+| `get_course_content` | Sections and activities of a course, with their files | `core_course_get_contents` |
+| `list_course_files` | Files of a course with `fileurl`, size and type, filtered by `query` or `mimetype` | `core_course_get_contents` |
+| `read_course_file` | Text of a PDF (by page ranges), HTML page or text file; `inner_path` reads a file inside a zip | file download (`downloadfiles`) |
+| `list_zip_contents` | Files inside a zip archive | file download |
+| `view_course_file_pages` | PDF pages as images, up to 8 per call (`dpi`, `grayscale`) | file download |
+| `get_upcoming_events` | Calendar events of all courses, local start and end time | `core_calendar_get_calendar_upcoming_view` |
+| `get_assignments` | Assignments with due date, `days_until_due` and submission status; `only` = `upcoming`, `overdue` or `all` | `mod_assign_get_assignments`, `mod_assign_get_submission_status` |
+| `get_grades` | Grade per course, or grade items with feedback for one course | `gradereport_overview_get_course_grades`, `gradereport_user_get_grade_items` |
+| `search_course_materials` | Activities and files whose name matches, across all courses | `core_enrol_get_users_courses`, `core_course_get_contents` |
+| `get_recent_activity` | Activities created or changed in the last `days`, with name, section and kind of change | `core_course_get_updates_since`, `core_course_get_contents` |
+| `get_course_announcements` | Posts of the news forums, optionally of the last `days` | `mod_forum_get_forums_by_courses`, `mod_forum_get_forum_discussions` |
+| `get_quizzes` | Quizzes with opening and closing time, time limit, attempts allowed, finished and left | `mod_quiz_get_quizzes_by_courses`, `mod_quiz_get_user_attempts` |
+| `get_quiz_review` | Questions of a finished attempt with the given answer, state, marks and feedback | `mod_quiz_get_user_attempts`, `mod_quiz_get_attempt_review` |
+
+At startup the server reads the token's enabled functions and does not register the tools that could not work (the map lives in `TOOL_WS` in `server.py`). `diagnose` lists what was disabled and why. If Moodle cannot be reached at startup, every tool stays registered.
+
+Times are ISO 8601 in the machine's time zone. HTML (intros, announcements, feedback) is converted to text.
+
+### Errors
+
+A failing tool returns a JSON object instead of a stack trace:
+
+```json
+{"tool": "get_quiz_review", "ws_function": "mod_quiz_get_attempt_review", "kind": "access_denied",
+ "code": "noreview", "message": "...", "retryable": false}
+```
+
+`kind` is one of `network`, `timeout`, `access_denied`, `not_enabled` (the function is not in the token's service), `invalid_param`, `blocked`, `unsupported`, `moodle_error` or `internal`. Network errors, timeouts and HTTP 502-504 are retried twice with backoff.
+
+### Read-only
+
+Any web service function whose name contains `start`, `process`, `save` or `submit` (for example `mod_quiz_start_attempt`) is refused before the request is sent. Quizzes often allow a single attempt, and opening one by mistake would use it up. `get_quiz_review` only opens attempts that are already finished.
+
+The token, `token=` URL parameters and the user's private access key are removed from every tool result and log line.
 
 ### Files
 
-| Tool | Description |
-| --- | --- |
-| `list_course_files` | List files in a course (resources, folders, pages) with `fileurl`, size and type, optionally filtered by `query` or `mimetype`; external links are flagged |
-| `read_course_file` | Download a file and return its text: PDF (page by page, with ranges like `1-10`), HTML pages, plain text; `inner_path` reads one file inside a zip |
-| `list_zip_contents` | List the files inside a zip archive without extracting it |
-| `view_course_file_pages` | Render PDF pages as images (up to 5 per call), for scanned or handwritten notes, formulas and diagrams; also takes `inner_path` |
-| `download_course_file` | Return the raw file (up to 10 MB) as an embedded binary resource, and save it to `MOODLE_DOWNLOAD_DIR` when set |
-
-`read_course_file` is the one to use from remote clients (claude.ai, Cowork, MetaMCP): the text goes straight into the conversation. Scanned or handwritten PDFs have no text layer: those pages come back as `[no text layer: ...]`, and `view_course_file_pages` shows them as images instead.
-
 Files are only fetched from the Moodle host in `MOODLE_URL`, with the token sent in the POST body, so links to other sites never receive it.
 
-### Assignments & deadlines
+`read_course_file` puts `pages_total`, `has_text_layer` and `next_pages` first. Pages with fewer than 50 letters and digits are listed in `pages_without_text`. When most of a PDF (judged on pages spread over the document) has no text, it is treated as scanned or handwritten: no text is returned, only a hint with the pages to pass to `view_course_file_pages`.
 
-| Tool | Description |
-| --- | --- |
-| `get_assignments` | Get assignments for courses, optionally filtered by course IDs |
-| `get_assignment_status` | Get submission and grading status for a specific assignment |
-| `get_upcoming_deadlines` | Get upcoming assignment deadlines across all courses, sorted by due date |
-| `get_overdue_assignments` | Get unsubmitted assignments past their due date, most overdue first |
-| `get_actionable_tasks` | Get a prioritized list of tasks needing action, sorted by urgency |
-| `analyze_assignment` | Analyze an assignment: status, requirements, materials, progress, deadline |
-| `extract_assignment_requirements` | Extract requirements, deliverables, constraints, and evaluation criteria from an assignment |
-| `find_relevant_materials` | Find course content relevant to an assignment, ranked by relevance |
-| `decompose_task` | Break an assignment into subtasks with effort, dependencies, and critical path |
-| `create_implementation_plan` | Build a step-by-step plan with timeline, resources, milestones, and risks |
+Downloaded files are cached on disk, so reading a long PDF in chunks downloads it once. The cache key includes the file's `timemodified` when the course page reported it. Course contents are cached for an hour. The cache holds course material: it lives in `%LOCALAPPDATA%\moodle-mcp\cache` (Windows) or `~/.cache/moodle-mcp`.
 
-### Grades & progress
+### Prompts
 
-| Tool | Description |
-| --- | --- |
-| `get_grades` | Get a grade overview for all courses, or detailed grades for one course |
-| `get_course_progress` | Get progress and completion for one course or all courses |
-| `get_course_health` | Health check for a course: progress, grades, unsubmitted and overdue counts |
-| `get_study_load` | Analyze assignment distribution by week to identify heavy weeks |
+Picked from the client's prompt menu (in Italian). They only say which tools to use and how to present the result, and ask the model to say when data is missing instead of guessing.
 
-### Aggregated overviews
+| Prompt | Arguments | Does |
+| --- | --- | --- |
+| `briefing` | | Deadlines of the next 7 days, announcements of the last 7 days, quizzes still open |
+| `prepara-lezione` | `corso`, `argomento` (optional) | Finds the material of a lesson and proposes what to read |
+| `revisione-quiz` | `corso`, `quiz` (optional) | Reviews a finished quiz and lists the mistakes |
+| `settimana` | | What came out this week on each course |
 
-| Tool | Description |
-| --- | --- |
-| `get_upcoming_events` | Get upcoming events from Moodle |
-| `semester_dashboard` | Combined overview of courses, upcoming deadlines, and grades |
-| `daily_briefing` | Daily summary of overdue count, today's deadlines, recent grades, events, and tasks |
-| `weekly_review` | Weekly summary of submitted/graded counts, deadlines, overdue count, and progress |
-| `ask_moodle` | Ask a natural language question and have it routed to the right data sources |
+### Resource
+
+`moodle://courses`: id, fullname and shortname of the enrolled courses. Clients such as Claude Desktop only read it when you attach it.
 
 ## API Reference
 
@@ -112,7 +118,7 @@ Go to Claude > Settings > Developer > Edit Config > claude_desktop_config.json t
 
 Pin a commit hash rather than a branch name so every restart runs the same code, and update the hash to upgrade.
 
-The server writes nothing to the working directory, so it runs from read-only containers. Files returned by `download_course_file` are saved on the MetaMCP host, not on your computer, so remote clients should use `read_course_file` instead.
+The server writes nothing to the working directory, so it runs from read-only containers. The file cache goes to the user cache directory; set `MOODLE_MCP_CACHE_DIR` to a writable path, or to an empty value to turn it off.
 
 To check the setup from the MetaMCP host:
 
@@ -127,7 +133,12 @@ MOODLE_URL=... MOODLE_TOKEN=... uvx --from <zip-url> moodle-mcp --health
 | `MOODLE_URL` | (required) | `https://{your-moodle-url}/webservice/rest/server.php` |
 | `MOODLE_TOKEN` | (required) | Web service token, see [Authentication](#authentication) |
 | `MOODLE_MAX_DOWNLOAD_MB` | `20` | Largest file (or unpacked zip member) the file tools will fetch |
-| `MOODLE_DOWNLOAD_DIR` | unset | If set, `download_course_file` also saves files here |
+| `MOODLE_MCP_TIMEOUT` | `30` | Seconds to wait for Moodle (downloads get twice as long) |
+| `MOODLE_MCP_FILTER_TOOLS` | `1` | `0` keeps every tool registered even if its functions are not enabled |
+| `MOODLE_MCP_CACHE_DIR` | user cache dir | Where the disk cache lives; empty value disables it |
+| `MOODLE_MCP_CACHE_TTL_HOURS` | `24` | How long downloaded files stay cached |
+| `MOODLE_MCP_CONTENTS_TTL_MINUTES` | `60` | How long course contents stay cached |
+| `MOODLE_MCP_CACHE_MAX_MB` | `500` | Size limit of the cache; oldest entries go first |
 | `MCP_TRANSPORT` | `stdio` | `stdio` or `streamable-http` |
 | `MCP_HTTP_HOST` / `MCP_HTTP_PORT` | `127.0.0.1` / `8000` | Bind address for `streamable-http` |
 | `MOODLE_MCP_LOG_LEVEL` | `INFO` | Log level (logs go to stderr) |
@@ -178,3 +189,10 @@ Notes:
 - The token has the same rights as your account in the mobile app, including sending messages and posting in forums. Keep it private and don't commit it. Ignore the private token, the server doesn't need it.
 - If the token leaks, remove it under **Preferences > Security keys** if your site shows that page, otherwise ask your Moodle admins to reset it.
 - Check your institution's rules on API and token use before running it on a schedule.
+
+## Development
+
+```bash
+uv run pytest                    # unit tests, recorded Moodle answers, no network
+uv run python scripts/smoke.py   # read-only calls against the Moodle in .env, with timings
+```
