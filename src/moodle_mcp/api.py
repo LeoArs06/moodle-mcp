@@ -11,6 +11,7 @@ from .moodle import (
     MoodleAPIError,
     format_moodle_array_params,
     get_moodle_api_data,
+    get_site_info,
 )
 from .utils import to_json_file
 
@@ -335,8 +336,7 @@ def _get_user_id() -> int:
     if _user_id_cache is not None:
         return _user_id_cache
 
-    data = get_moodle_api_data(APIFunction.core_webservice_get_site_info)
-    _user_id_cache = glom(data, "userid")
+    _user_id_cache = glom(get_site_info(), "userid")
     logger.info(f"Retrieved and cached Moodle user ID: {_user_id_cache}")
     return _user_id_cache
 
@@ -980,7 +980,7 @@ def get_course_announcements(courseid: int | None = None) -> list[CourseAnnounce
         )
     except MoodleAPIError as e:
         logger.warning(f"Forum API unavailable: {e}")
-        return announcements
+        raise
 
     to_json_file(forums_data, "forums.json")
 
@@ -988,6 +988,7 @@ def get_course_announcements(courseid: int | None = None) -> list[CourseAnnounce
     forums_list = forums_data if isinstance(forums_data, list) else forums_data.get("forums", [])
 
     # Step 3: Find news/announcement forums (type "news")
+    errors: list[MoodleAPIError] = []
     for forum in forums_list:
         forum_type = forum.get("type", "")
         if forum_type != "news":
@@ -1000,11 +1001,13 @@ def get_course_announcements(courseid: int | None = None) -> list[CourseAnnounce
         # Step 4: Get discussions from this forum
         try:
             discussions_data = get_moodle_api_data(
-                APIFunction.mod_forum_get_discussions,
-                params={"forumid": str(forum_id), "perpage": "20"},
+                APIFunction.mod_forum_get_forum_discussions,
+                params={"forumid": str(forum_id), "page": "0", "perpage": "20"},
+                use_original_data=False,
             )
         except MoodleAPIError as e:
             logger.warning(f"Could not get discussions for forum {forum_id}: {e}")
+            errors.append(e)
             continue
 
         to_json_file(discussions_data, f"forum_discussions_{forum_id}.json")
@@ -1030,6 +1033,10 @@ def get_course_announcements(courseid: int | None = None) -> list[CourseAnnounce
                     ).isoformat() if created > 0 else "",
                 }
             )
+
+    # Every forum failed: report why instead of claiming there are no announcements.
+    if errors and not announcements:
+        raise errors[0]
 
     # Sort by date descending (newest first)
     announcements.sort(key=lambda x: x["date"], reverse=True)

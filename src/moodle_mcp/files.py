@@ -17,7 +17,6 @@ import zipfile
 from html.parser import HTMLParser
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
-import requests
 from mcp_types import BlobResourceContents, EmbeddedResource, ImageContent
 from typing_extensions import TypedDict
 
@@ -26,9 +25,10 @@ from .moodle import (
     MOODLE_TOKEN,
     MOODLE_URL,
     APIFunction,
+    TIMEOUT,
     MoodleAPIError,
-    _redact,
     get_moodle_api_data,
+    post_with_retry,
 )
 from .utils import getenv
 
@@ -147,14 +147,11 @@ def fetch_file(fileurl: str, max_bytes: int | None = None) -> tuple[bytes, str |
     filename = unquote(url.rsplit("/", 1)[-1])
 
     logger.info(f"Downloading file {filename}")
-    try:
-        # No redirects: requests re-sends the POST body (and the token) on 307/308,
-        # possibly to another host.
-        rsp = requests.post(
-            url, data={"token": MOODLE_TOKEN}, timeout=60, stream=True, allow_redirects=False
-        )
-    except requests.RequestException as e:
-        raise MoodleAPIError("network_error", _redact(str(e)), "pluginfile") from None
+    # No redirects: requests re-sends the POST body (and the token) on 307/308,
+    # possibly to another host.
+    rsp = post_with_retry(
+        url, {"token": MOODLE_TOKEN}, "pluginfile", timeout=2 * TIMEOUT, stream=True, allow_redirects=False
+    )
 
     with rsp:
         if rsp.is_redirect:

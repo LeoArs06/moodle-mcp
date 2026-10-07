@@ -1,0 +1,32 @@
+{
+  "sitename": "Test Moodle",
+  "username": "student",
+  "firstname": "Test",
+  "lastname": "Student",
+  "fullname": "Test Student",
+  "lang": "it",
+  "userid": 42,
+  "siteurl": "https://moodle.example.org",
+  "userpictureurl": "https://moodle.example.org/theme/image.php/boost/core/1/u/f1",
+  "functions": [
+    {"name": "core_webservice_get_site_info", "version": "2024100700"},
+    {"name": "core_enrol_get_users_courses", "version": "2024100700"},
+    {"name": "core_course_get_contents", "version": "2024100700"},
+    {"name": "core_calendar_get_calendar_upcoming_view", "version": "2024100700"},
+    {"name": "mod_assign_get_assignments", "version": "2024100700"},
+    {"name": "mod_assign_get_submission_status", "version": "2024100700"},
+    {"name": "gradereport_overview_get_course_grades", "version": "2024100700"},
+    {"name": "gradereport_user_get_grade_items", "version": "2024100700"},
+    {"name": "mod_forum_get_forums_by_courses", "version": "2024100700"},
+    {"name": "mod_forum_get_forum_discussions", "version": "2024100700"},
+    {"name": "mod_quiz_get_quizzes_by_courses", "version": "2024100700"},
+    {"name": "mod_quiz_get_user_attempts", "version": "2024100700"},
+    {"name": "mod_quiz_get_attempt_review", "version": "2024100700"}
+  ],
+  "downloadfiles": 1,
+  "uploadfiles": 1,
+  "release": "4.5.13+ (Build: 20260818)",
+  "version": "2024100713.01",
+  "userprivateaccesskey": "fedcba9876543210fedcba9876543210",
+  "siteid": 1
+}

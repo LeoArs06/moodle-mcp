@@ -99,7 +99,7 @@ def health() -> int:
         info = get_moodle_api_data(APIFunction.core_webservice_get_site_info)
         payload["moodle"] = {"ok": True, "release": info.get("release"), "sitename": info.get("sitename")}
     except MoodleAPIError as e:
-        payload["moodle"] = {"ok": False, "error": str(e)}
+        payload["moodle"] = {"ok": False, "error": e.to_dict()}
 
     print(json.dumps(payload, indent=2))
     return 0 if payload["moodle"]["ok"] else 1
@@ -153,7 +153,10 @@ def main() -> int:
     install_exit_logging()
 
     try:
-        from .server import mcp
+        from .server import apply_availability, mcp
+
+        if os.environ.get("MOODLE_MCP_FILTER_TOOLS", "1") != "0":
+            apply_availability()
 
         if args.transport == "stdio":
             mcp.run()
