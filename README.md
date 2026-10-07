@@ -114,7 +114,10 @@ Go to Claude > Settings > Developer > Edit Config > claude_desktop_config.json t
   ```
   MOODLE_URL=https://{your-moodle-url}/webservice/rest/server.php
   MOODLE_TOKEN={your-moodle-token}
+  TZ=Europe/Rome
   ```
+
+  Times are reported in the server's time zone, and containers usually run in UTC: set `TZ` to yours (slim images may also need the `tzdata` package).
 
 Pin a commit hash rather than a branch name so every restart runs the same code, and update the hash to upgrade.
 

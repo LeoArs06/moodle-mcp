@@ -38,6 +38,7 @@ class Quiz(TypedDict):
     attempts_left: int | None
     attempt_in_progress: bool
     last_finished_attempt_id: int | None
+    last_finished_local: str | None
 
 
 class QuizQuestion(TypedDict):
@@ -123,6 +124,7 @@ def get_quizzes(courseids: list[int] | None = None) -> list[Quiz]:
                 "attempts_left": max(allowed - len(finished), 0) if allowed else None,
                 "attempt_in_progress": in_progress,
                 "last_finished_attempt_id": finished[-1]["id"] if finished else None,
+                "last_finished_local": local_time(finished[-1].get("timefinish")) if finished else None,
             }
         )
 

@@ -48,7 +48,7 @@ TOOL_WS: dict[str, tuple[str, ...]] = {
     "get_assignments": ("mod_assign_get_assignments", "mod_assign_get_submission_status"),
     "get_grades": ("gradereport_overview_get_course_grades", "gradereport_user_get_grade_items", _ENROL),
     "search_course_materials": (_ENROL, _CONTENTS),
-    "get_recent_activity": (_ENROL, "core_course_get_updates_since", _CONTENTS),
+    "get_recent_activity": (_ENROL, "core_course_get_updates_since"),
     "get_course_announcements": (
         _ENROL,
         "mod_forum_get_forums_by_courses",
@@ -356,7 +356,7 @@ def quiz_review_prompt(corso: str | None = None, quiz: str | None = None) -> str
     return (
         f"{target}.\n"
         "- Con get_quizzes trova i quiz con almeno un tentativo completato; se non ho indicato quale"
-        " e ce n'è più di uno, prendi quello con il tentativo più recente e dimmi quale hai scelto.\n"
+        " e ce n'è più di uno, prendi quello con last_finished_local più recente e dimmi quale hai scelto.\n"
         "- Usa get_quiz_review. Per ogni domanda sbagliata o con punteggio parziale riporta: la domanda"
         " in breve, la mia risposta, la risposta corretta se Moodle la mostra, il concetto da ripassare.\n"
         "- Chiudi con i 2-3 argomenti da ripassare per primi.\n"

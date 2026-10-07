@@ -431,6 +431,11 @@ def _get_course_grades_detail(courseid: int) -> list[GradeItem]:
 # ---------------------------------------------------------------------------
 
 
+# (course id, module id) still missing after a refresh: activities hidden from
+# students. Remembered so they don't force a refresh on every call.
+_hidden_modules: set[tuple[int, int]] = set()
+
+
 def _modules_by_id(courseid: int, refresh: bool = False) -> dict[int, tuple[str, dict]]:
     """Map module id -> (section name, module) for a course."""
     modules: dict[int, tuple[str, dict]] = {}
@@ -473,9 +478,11 @@ def get_recent_activity(days: int = 7, courseid: int | None = None) -> list[Rece
             continue
 
         modules = _modules_by_id(course["id"])
-        if any(i.get("id") not in modules for i in instances):
-            # The cached course page predates a new activity.
+        missing = {(course["id"], i.get("id")) for i in instances if i.get("id") not in modules}
+        if missing - _hidden_modules:
+            # The cached course page may predate a new activity.
             modules = _modules_by_id(course["id"], refresh=True)
+            _hidden_modules.update(m for m in missing if m[1] not in modules)
 
         for inst in instances:
             section, module = modules.get(inst.get("id"), (None, {}))

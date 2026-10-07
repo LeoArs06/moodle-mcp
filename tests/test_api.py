@@ -136,3 +136,16 @@ def test_prompts_only_name_existing_tools_and_forbid_guessing(name):
 def test_prompt_arguments_are_used():
     text = asyncio.run(server.mcp.get_prompt("prepara-lezione", {"corso": "Fisica 2", "argomento": "induzione"})).messages[0].content.text
     assert "«Fisica 2»" in text and "«induzione»" in text
+
+
+def test_hidden_module_refreshes_contents_only_once(one_course, monkeypatch, tmp_path):
+    monkeypatch.setenv("MOODLE_MCP_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(api, "_hidden_modules", set())
+    one_course.responses["core_course_get_updates_since"] = {
+        "instances": [{"contextlevel": "module", "id": 99, "updates": [{"name": "configuration"}]}]
+    }
+    one_course.responses["core_course_get_contents"] = contents()
+    api.get_recent_activity()
+    api.get_recent_activity()
+    # First call: cached read + one refresh; second call: cache only.
+    assert one_course.count("core_course_get_contents") == 2
