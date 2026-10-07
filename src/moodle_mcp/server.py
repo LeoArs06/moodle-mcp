@@ -8,7 +8,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_types import EmbeddedResource, ImageContent
 
-from . import api, files
+from . import api, files, quiz
 from .moodle import (
     ErrorKind,
     MoodleAPIError,
@@ -73,6 +73,8 @@ TOOL_WS: dict[str, tuple[str, ...]] = {
     "find_relevant_materials": (_ASSIGNS, _CONTENTS),
     "decompose_task": (_ASSIGNS,),
     "create_implementation_plan": (_ASSIGNS,),
+    "get_quizzes": (_ENROL, "mod_quiz_get_quizzes_by_courses", "mod_quiz_get_user_attempts"),
+    "get_quiz_review": ("mod_quiz_get_user_attempts", "mod_quiz_get_attempt_review"),
 }
 
 # Tools removed at startup, with the requirements they were missing.
@@ -391,6 +393,18 @@ def decompose_task(assignid: int) -> api.TaskDecomposition:
 def create_implementation_plan(assignid: int) -> api.ImplementationPlan:
     """Create a step-by-step implementation plan for completing an assignment, with timeline, resources, milestones, and risk factors"""
     return api.create_implementation_plan(assignid)
+
+
+@tool
+def get_quizzes(courseids: list[int] | None = None) -> list[quiz.Quiz]:
+    """List quizzes of the enrolled courses (or of courseids): opening and closing time, time limit, attempts allowed (0 = unlimited) and how many the user has finished. Read-only: this server never starts or submits an attempt"""
+    return quiz.get_quizzes(courseids)
+
+
+@tool
+def get_quiz_review(quizid: int, attemptid: int | None = None) -> quiz.QuizReview:
+    """Review of a finished quiz attempt: each question with the given answer, state, marks and feedback, as far as the quiz settings allow the student to see them. Defaults to the latest finished attempt; attempts still in progress are never opened"""
+    return quiz.get_quiz_review(quizid, attemptid)
 
 
 def main():

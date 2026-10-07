@@ -50,6 +50,7 @@ _KIND_BY_CODE = {
     "invalidtoken": ErrorKind.ACCESS_DENIED,
     "servicerequireslogin": ErrorKind.ACCESS_DENIED,
     "errorcoursecontextnotvalid": ErrorKind.ACCESS_DENIED,
+    "noreview": ErrorKind.ACCESS_DENIED,
     "redirect": ErrorKind.ACCESS_DENIED,
     "config_error": ErrorKind.ACCESS_DENIED,
     "not_enabled": ErrorKind.NOT_ENABLED,
@@ -132,6 +133,9 @@ class APIFunction(Enum):
         "core_completion_get_course_completion_status"
     )
     core_calendar_get_calendar_events = "core_calendar_get_calendar_events"
+    mod_quiz_get_quizzes_by_courses = "mod_quiz_get_quizzes_by_courses"
+    mod_quiz_get_user_attempts = "mod_quiz_get_user_attempts"
+    mod_quiz_get_attempt_review = "mod_quiz_get_attempt_review"
 
 
 # Fields not needed for specific API functions
@@ -239,6 +243,12 @@ def post_with_retry(
     Only read-only functions get here (see DENIED_FUNCTION), so repeating a
     request cannot change anything on Moodle.
     """
+    wsfunction = data.get("wsfunction") or ""
+    if DENIED_FUNCTION.search(wsfunction):
+        raise MoodleAPIError(
+            "blocked", f"{wsfunction} could change data on Moodle; this server is read-only", wsfunction
+        )
+
     timeout = timeout or TIMEOUT
     for attempt in range(retries + 1):
         last = attempt == retries
@@ -270,13 +280,6 @@ def get_moodle_api_data(
     timeout: float | None = None,
     retries: int = MAX_RETRIES,
 ):
-    if DENIED_FUNCTION.search(function.value):
-        raise MoodleAPIError(
-            "blocked",
-            f"{function.value} could change data on Moodle; this server is read-only",
-            function.value,
-        )
-
     if not MOODLE_URL or not MOODLE_TOKEN:
         raise MoodleAPIError(
             "config_error",
