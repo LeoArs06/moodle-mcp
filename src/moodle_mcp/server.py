@@ -245,7 +245,7 @@ def read_course_file(
     max_chars: int = files.DEFAULT_MAX_CHARS,
     inner_path: str | None = None,
 ) -> files.FileText:
-    """Download a course file and return its text (PDF, HTML pages, plain text). Use the fileurl from list_course_files or get_course_content. For long PDFs pass pages like '1-10' and continue with next_pages from the result. For a file inside a zip archive, pass the zip's fileurl and inner_path from list_zip_contents"""
+    """Download a course file and return its text (PDF, HTML pages, plain text). Use the fileurl from list_course_files or get_course_content. For long PDFs pass pages like '1-10' and continue with next_pages. If has_text_layer is false (scans, handwriting) no text is returned: use view_course_file_pages with the suggested pages. For a file inside a zip archive, pass the zip's fileurl and inner_path from list_zip_contents"""
     return files.read_course_file(fileurl, pages, max_chars, inner_path)
 
 
@@ -257,15 +257,19 @@ def list_zip_contents(fileurl: str) -> list[files.ZipEntry]:
 
 @tool
 def view_course_file_pages(
-    fileurl: str, pages: str = "1-3", inner_path: str | None = None
+    fileurl: str,
+    pages: str = "1-3",
+    inner_path: str | None = None,
+    dpi: int = files.DEFAULT_DPI,
+    grayscale: bool = True,
 ) -> list[str | ImageContent]:
-    """Render PDF pages as images (max 5 per call). Use this when read_course_file reports '[no text layer]' (scanned or handwritten notes) or when the layout, formulas or diagrams matter. For a PDF inside a zip archive, pass inner_path from list_zip_contents"""
-    return files.view_course_file_pages(fileurl, pages, inner_path)
+    """Render PDF pages as images (up to 8 per call). Use this when read_course_file finds no text layer (scans, handwritten notes) or when layout, formulas or diagrams matter. Raise dpi (max 200) for small handwriting, set grayscale=false when colours matter. For a PDF inside a zip archive, pass inner_path from list_zip_contents"""
+    return files.view_course_file_pages(fileurl, pages, inner_path, dpi, grayscale)
 
 
 @tool
 def download_course_file(fileurl: str) -> list[str | EmbeddedResource]:
-    """Download a course file as-is and return it as an embedded binary resource (also saved to MOODLE_DOWNLOAD_DIR on the server when configured). Prefer read_course_file to read the content"""
+    """Download a course file as-is and return it as an embedded binary resource (also saved to MOODLE_DOWNLOAD_DIR on the server when configured). Files over 10 MB return only metadata and how to read them. Prefer read_course_file to read the content"""
     return files.download_course_file(fileurl)
 
 

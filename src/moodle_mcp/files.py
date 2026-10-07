@@ -20,6 +20,7 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 from mcp_types import BlobResourceContents, EmbeddedResource, ImageContent
 from typing_extensions import TypedDict
 
+from . import cache
 from .logger import logger
 from .moodle import (
     MOODLE_TOKEN,
@@ -29,14 +30,24 @@ from .moodle import (
     MoodleAPIError,
     get_moodle_api_data,
     post_with_retry,
+    response_hooks,
 )
 from .utils import getenv
 
 PLUGINFILE_PATH = "/webservice/pluginfile.php"
-DEFAULT_MAX_CHARS = 40_000
-MAX_RENDER_PAGES = 5
+DEFAULT_MAX_CHARS = 20_000
+MAX_RENDER_PAGES = 8
+DEFAULT_DPI = 110
 # Longest side of rendered pages; larger images get downscaled by Claude anyway.
 RENDER_LONG_SIDE = 1568
+# Total JPEG bytes per view_course_file_pages call; fewer pages are returned
+# when large or detailed pages would exceed it.
+MAX_RENDER_BYTES = 3_000_000
+# A page with fewer letters and digits than this has no usable text layer.
+MIN_PAGE_CHARS = 50
+# Share of such pages above which a PDF counts as scanned or handwritten.
+# Slides often have a few near-empty pages; handwritten notes have almost all.
+NO_TEXT_SHARE = 0.6
 MAX_DOWNLOAD_MB = float(getenv("MOODLE_MAX_DOWNLOAD_MB", "20"))
 # Raw blobs go into the model context as base64 (+33%), so keep them smaller.
 MAX_BLOB_MB = 10
@@ -69,12 +80,15 @@ class ZipEntry(TypedDict):
 
 
 class FileText(TypedDict):
+    pages_total: int | None
+    has_text_layer: bool | str | None
+    next_pages: str | None
     filename: str
     mimetype: str | None
-    total_pages: int | None
     pages: str | None
     truncated: bool
-    next_pages: str | None
+    pages_without_text: str | None
+    hint: str | None
     text: str
 
 
@@ -139,13 +153,45 @@ def normalize_file_url(fileurl: str) -> str:
 # Fetching
 # ---------------------------------------------------------------------------
 
+# timemodified of each file seen in course contents, keyed by its path after
+# pluginfile.php, so that a cached copy is dropped when the file changes.
+_file_versions: dict[str, int] = {}
+
+
+def _file_key(fileurl: str) -> str:
+    path = unquote(urlsplit(fileurl).path)
+    return path.split("pluginfile.php", 1)[-1]
+
+
+def _remember_file_versions(sections) -> None:
+    for section in sections if isinstance(sections, list) else []:
+        for module in section.get("modules") or []:
+            for content in module.get("contents") or []:
+                if content.get("fileurl") and content.get("timemodified"):
+                    _file_versions[_file_key(content["fileurl"])] = content["timemodified"]
+
+
+response_hooks.setdefault(APIFunction.core_course_get_contents, []).append(_remember_file_versions)
+
 
 def fetch_file(fileurl: str, max_bytes: int | None = None) -> tuple[bytes, str | None, str]:
-    """Download a file. Returns (content, mimetype, filename)."""
+    """Download a file, or take it from the disk cache. Returns (content, mimetype, filename)."""
     url = normalize_file_url(fileurl)
     max_bytes = max_bytes or int(MAX_DOWNLOAD_MB * 1024 * 1024)
     filename = unquote(url.rsplit("/", 1)[-1])
 
+    cache_key = f"{url}@{_file_versions.get(_file_key(url), '')}"
+    hit = cache.get("files", cache_key, cache.FILES_TTL)
+    if hit and len(hit[0]) <= max_bytes:
+        logger.info(f"Using cached file {filename}")
+        return hit[0], hit[1].get("mimetype"), filename
+
+    content, mimetype = _download(url, filename, max_bytes)
+    cache.put("files", cache_key, content, {"mimetype": mimetype})
+    return content, mimetype, filename
+
+
+def _download(url: str, filename: str, max_bytes: int) -> tuple[bytes, str | None]:
     logger.info(f"Downloading file {filename}")
     # No redirects: requests re-sends the POST body (and the token) on 307/308,
     # possibly to another host.
@@ -204,7 +250,7 @@ def fetch_file(fileurl: str, max_bytes: int | None = None) -> tuple[bytes, str |
     if not mimetype or mimetype == "application/octet-stream":
         mimetype = mimetypes.guess_type(filename)[0] or mimetype
 
-    return content, mimetype, filename
+    return content, mimetype
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +326,16 @@ def _format_ranges(indexes: list[int]) -> str:
     return ",".join(ranges)
 
 
+def _meaningful_chars(text: str) -> int:
+    """Letters and digits, ignoring OCR noise such as private-use glyphs."""
+    if not text:
+        return 0
+    junk = sum(1 for c in text if c == "\ufffd" or "\ue000" <= c <= "\uf8ff")
+    if junk > 0.3 * len(text):
+        return 0
+    return sum(1 for c in text if c.isalnum())
+
+
 def pdf_to_text(content: bytes, pages: str | None, max_chars: int) -> dict:
     from pypdf import PdfReader
 
@@ -294,13 +350,18 @@ def pdf_to_text(content: bytes, pages: str | None, max_chars: int) -> dict:
     wanted = _parse_pages(pages, total)
     parts: list[str] = []
     done: list[int] = []
+    empty: list[int] = []
     used = 0
     for idx in wanted:
         try:
             text = (reader.pages[idx].extract_text() or "").strip()
         except Exception as e:
             text = f"[text extraction failed: {e}]"
-        block = f"--- page {idx + 1} ---\n" + (text or "[no text layer: scanned page or image only]")
+        if _meaningful_chars(text) < MIN_PAGE_CHARS:
+            empty.append(idx)
+            block = f"--- page {idx + 1} ---\n[little or no text: image, diagram, scan or handwriting]"
+        else:
+            block = f"--- page {idx + 1} ---\n{text}"
         if parts and used + len(block) > max_chars:
             break
         parts.append(block[:max_chars] if not parts else block)
@@ -308,13 +369,47 @@ def pdf_to_text(content: bytes, pages: str | None, max_chars: int) -> dict:
         done.append(idx)
 
     remaining = [i for i in wanted if i not in set(done)]
-    return {
-        "total_pages": total,
+    empty = [i for i in empty if i in set(done)]
+    if remaining:
+        next_pages = _format_ranges(remaining)
+    elif done and done[-1] + 1 < total:
+        # Everything requested was returned; point at the rest of the document.
+        next_pages = f"{done[-1] + 2}-{total}"
+    else:
+        next_pages = None
+    result = {
+        "pages_total": total,
+        "has_text_layer": True,
+        "next_pages": next_pages,
         "pages": _format_ranges(done) if done else None,
         "truncated": bool(remaining) or used > max_chars,
-        "next_pages": _format_ranges(remaining) if remaining else None,
+        "pages_without_text": _format_ranges(empty) if empty else None,
+        "hint": None,
         "text": "\n\n".join(parts),
     }
+
+    if done and len(empty) >= NO_TEXT_SHARE * len(done):
+        # Mostly scans or handwriting: the few characters found are headers or
+        # OCR noise, so they are not returned.
+        suggested = _format_ranges(empty[:MAX_RENDER_PAGES])
+        result.update(
+            has_text_layer=False,
+            text="",
+            hint=(
+                f"{len(empty)} of {len(done)} pages have little or no extractable text"
+                " (probably scanned or handwritten). Read them as images with"
+                f" view_course_file_pages, pages='{suggested}'."
+            ),
+        )
+    elif empty:
+        result.update(
+            has_text_layer="partial",
+            hint=(
+                "Pages listed in pages_without_text are images, diagrams or scans;"
+                " use view_course_file_pages if their content matters."
+            ),
+        )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -493,7 +588,15 @@ def read_course_file(
     is_pdf = mimetype == "application/pdf" or content[:5] == b"%PDF-"
     if is_pdf:
         result = pdf_to_text(content, pages, max_chars)
-        return {"filename": filename, "mimetype": "application/pdf", **result}
+        # Paging fields first, so they are read before the text.
+        return {
+            "pages_total": result.pop("pages_total"),
+            "has_text_layer": result.pop("has_text_layer"),
+            "next_pages": result.pop("next_pages"),
+            "filename": filename,
+            "mimetype": "application/pdf",
+            **result,
+        }
 
     if (mimetype and (mimetype.startswith(TEXT_MIMETYPES) or mimetype.endswith("+xml"))) or (
         not mimetype and _looks_like_text(content)
@@ -503,12 +606,15 @@ def read_course_file(
         if mimetype == "text/html" or filename.endswith((".html", ".htm")):
             text = html_to_text(text)
         return {
+            "pages_total": None,
+            "has_text_layer": None,
+            "next_pages": None,
             "filename": filename,
             "mimetype": mimetype,
-            "total_pages": None,
             "pages": None,
             "truncated": len(text) > max_chars,
-            "next_pages": None,
+            "pages_without_text": None,
+            "hint": None,
             "text": text[:max_chars],
         }
 
@@ -525,10 +631,16 @@ def read_course_file(
 
 
 def view_course_file_pages(
-    fileurl: str, pages: str = "1-3", inner_path: str | None = None
+    fileurl: str,
+    pages: str = "1-3",
+    inner_path: str | None = None,
+    dpi: int = DEFAULT_DPI,
+    grayscale: bool = True,
 ) -> list:
     """Render PDF pages as JPEG images, for scanned or handwritten documents."""
     import pypdfium2 as pdfium
+
+    dpi = min(max(dpi, 50), 200)
 
     content, mimetype, filename = _fetch(fileurl, inner_path)
     if not (mimetype == "application/pdf" or content[:5] == b"%PDF-"):
@@ -552,23 +664,37 @@ def view_course_file_pages(
                 "invalid_pages", f"No pages in range '{pages}' ({total} pages)", "view_course_file_pages"
             )
 
-        summary = f"{filename}: pages {_format_ranges(shown)} of {total}"
-        if rest:
-            summary += f". At most {MAX_RENDER_PAGES} pages per call; continue with pages='{_format_ranges(rest)}'"
-        result: list = [summary]
-
+        images: list[tuple[int, bytes]] = []
+        used = 0
         for idx in shown:
             page = pdf[idx]
             width, height = page.get_size()
-            scale = RENDER_LONG_SIDE / max(width, height, 1)
-            image = page.render(scale=scale).to_pil().convert("RGB")
+            # PDF sizes are in points (1/72 inch).
+            scale = min(dpi / 72, RENDER_LONG_SIDE / max(width, height, 1))
+            image = page.render(scale=scale, grayscale=grayscale).to_pil()
+            image = image.convert("L" if grayscale else "RGB")
             buf = io.BytesIO()
             image.save(buf, format="JPEG", quality=80, optimize=True)
+            if images and used + buf.tell() > MAX_RENDER_BYTES:
+                break
+            images.append((idx, buf.getvalue()))
+            used += buf.tell()
+
+        rendered = [idx for idx, _ in images]
+        rest = [i for i in wanted if i not in set(rendered)]
+        summary = f"{filename}: pages {_format_ranges(rendered)} of {total}"
+        if rest:
+            summary += (
+                f". At most {MAX_RENDER_PAGES} pages (or {MAX_RENDER_BYTES // 1_000_000} MB) per call;"
+                f" continue with pages='{_format_ranges(rest)}'"
+            )
+        result: list = [summary]
+        for idx, data in images:
             result.append(f"--- page {idx + 1} ---")
             result.append(
                 ImageContent(
                     type="image",
-                    data=base64.b64encode(buf.getvalue()).decode("ascii"),
+                    data=base64.b64encode(data).decode("ascii"),
                     mime_type="image/jpeg",
                 )
             )
@@ -580,6 +706,33 @@ def view_course_file_pages(
 def _safe_filename(name: str) -> str:
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip(" .")
     return name or "file"
+
+
+def _file_summary(content: bytes, mimetype: str | None, filename: str) -> dict:
+    """Metadata and next steps for a file too large to return as a blob."""
+    summary: dict = {
+        "filename": filename,
+        "mimetype": mimetype,
+        "size_mb": round(len(content) / 1_048_576, 1),
+        "returned_inline": False,
+        "reason": f"larger than {MAX_BLOB_MB} MB",
+    }
+    if mimetype == "application/pdf" or content[:5] == b"%PDF-":
+        try:
+            from pypdf import PdfReader
+
+            summary["pages_total"] = len(PdfReader(io.BytesIO(content)).pages)
+        except Exception:
+            pass
+        summary["next_step"] = (
+            "read_course_file with pages='1-10' (then next_pages), or"
+            " view_course_file_pages for scanned or handwritten pages"
+        )
+    elif mimetype == "application/zip" or content[:4] == b"PK\x03\x04":
+        summary["next_step"] = "list_zip_contents, then read one file with inner_path"
+    else:
+        summary["next_step"] = "read_course_file if it is text, PDF or HTML"
+    return summary
 
 
 def download_course_file(fileurl: str) -> list:
@@ -601,14 +754,7 @@ def download_course_file(fileurl: str) -> list:
         result.append(f"Saved {filename} ({len(content)} bytes) to {os.path.abspath(path)}")
 
     if blob_too_large:
-        message = (
-            f"{filename} is {len(content) / 1_048_576:.1f} MB, too large to return inline"
-            f" (limit {MAX_BLOB_MB} MB). Use read_course_file or view_course_file_pages"
-            " (with inner_path for zip archives) to read it."
-        )
-        if not result:
-            raise MoodleAPIError("file_too_large", message, "download_course_file")
-        result.append(message)
+        result.append(json.dumps(_file_summary(content, mimetype, filename), ensure_ascii=False))
         return result
 
     result.append(

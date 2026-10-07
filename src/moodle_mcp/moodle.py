@@ -8,6 +8,7 @@ import requests
 from glom import delete
 from mcp.server.mcpserver.exceptions import ToolError
 
+from . import cache
 from .logger import logger
 from .utils import getenv
 
@@ -175,6 +176,14 @@ DELETE_FIELDS = {
 }
 
 
+# Responses cached on disk, with their TTL in seconds.
+CACHE_TTL = {APIFunction.core_course_get_contents: cache.CONTENTS_TTL}
+
+# Callbacks that see every raw response of a function, cached or not
+# (files.py uses it to learn the timemodified of each file).
+response_hooks: dict[APIFunction, list] = {}
+
+
 def format_moodle_array_params(key: str, values: list) -> dict:
     """Format a list of values as Moodle-style array parameters.
 
@@ -280,6 +289,30 @@ def get_moodle_api_data(
     timeout: float | None = None,
     retries: int = MAX_RETRIES,
 ):
+    ttl = CACHE_TTL.get(function)
+    key = function.value + json.dumps(params or {}, sort_keys=True)
+    hit = cache.get("ws", key, ttl) if ttl else None
+    if hit:
+        logger.info(f"Using cached `{function.value}`")
+        data = json.loads(hit[0])
+    else:
+        data = _call_moodle(function, params, timeout, retries)
+        if ttl:
+            cache.put("ws", key, json.dumps(data).encode("utf-8"))
+
+    for hook in response_hooks.get(function, []):
+        hook(data)
+
+    if use_original_data:
+        return data
+
+    for field_path in DELETE_FIELDS.get(function, []):
+        delete(data, field_path, ignore_missing=True)
+
+    return data
+
+
+def _call_moodle(function: APIFunction, params: dict | None, timeout: float | None, retries: int):
     if not MOODLE_URL or not MOODLE_TOKEN:
         raise MoodleAPIError(
             "config_error",
@@ -328,12 +361,6 @@ def get_moodle_api_data(
         error_code = data.get("errorcode", "unknown")
         logger.error(f"Moodle API error: [{error_code}] {redact(error_msg)}")
         raise MoodleAPIError(error_code, error_msg, function.value)
-
-    if use_original_data:
-        return data
-
-    for field_path in DELETE_FIELDS.get(function, []):
-        delete(data, field_path, ignore_missing=True)
 
     return data
 
